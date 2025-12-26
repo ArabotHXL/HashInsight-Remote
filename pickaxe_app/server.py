@@ -388,10 +388,8 @@ def create_app() -> FastAPI:
                 detail='File upload requires "python-multipart". Install it with: pip install python-multipart',
             )
 
-    @app.get("/api/config")
-    def api_get_config(
-        include_secrets: bool = False, _auth: None = Depends(require_local_auth)
-    ) -> Dict[str, Any]:
+    @app.get("/api/config", dependencies=[Depends(require_local_auth)])
+    def api_get_config(include_secrets: bool = False) -> Dict[str, Any]:
         cfg = load_config(None)
         config_payload: Dict[str, Any] = {
             "site_id": cfg.site_id,
@@ -425,7 +423,7 @@ def create_app() -> FastAPI:
             "ip_ranges": cfg.ip_ranges,
         }
 
-        if include_secrets:
+        if include_secrets is True:
             config_payload.update(
                 {
                     "collector_token": cfg.collector_token,
@@ -449,40 +447,66 @@ def create_app() -> FastAPI:
             },
         }
 
-    @app.post("/api/config")
-    def api_save_config(payload: Dict[str, Any], _auth: None = Depends(require_local_auth)) -> Dict[str, Any]:
+    @app.post("/api/config", dependencies=[Depends(require_local_auth)])
+    def api_save_config(payload: Dict[str, Any]) -> Dict[str, Any]:
         raw = payload.get("config")
         if not isinstance(raw, dict):
             raise HTTPException(status_code=400, detail="Missing config")
 
         existing_cfg = load_config(None)
 
+        def _as_bool(value: Any) -> bool:
+            return value in (True, "true", "True", 1, "1", "yes", "on")
+
+        def _as_positive_int(value: Any, default: int, minimum: int = 0) -> int:
+            try:
+                parsed = int(value)
+            except Exception:
+                return default
+            return max(parsed, minimum)
+
+        def _as_positive_float(value: Any, default: float, minimum: float = 0.0) -> float:
+            try:
+                parsed = float(value)
+            except Exception:
+                return default
+            return max(parsed, minimum)
+
         miners_raw = raw.get("miners", []) or []
         miners: List[MinerConfig] = []
         for m in miners_raw:
-            if not m:
+            if not isinstance(m, dict):
                 continue
             try:
+                miner_id = str(m.get("miner_id") or m.get("id") or m.get("ip"))
+                ip = str(m.get("ip"))
+                if not miner_id or not ip:
+                    continue
                 miners.append(MinerConfig(
-                    miner_id=str(m.get("miner_id") or m.get("id") or m.get("ip")),
-                    ip=str(m.get("ip")),
-                    port=int(m.get("port", 4028)),
+                    miner_id=miner_id,
+                    ip=ip,
+                    port=_as_positive_int(m.get("port", 4028), 4028, 1),
                     miner_type=str(m.get("miner_type") or m.get("type") or "antminer"),
                 ))
             except Exception:
                 continue
 
         # Handle older UI payloads that only provide poll_interval_sec.
-        poll = int(raw.get("poll_interval_sec", 60))
-        latest = int(raw.get("latest_interval_sec", poll))
-        raw_int = int(raw.get("raw_interval_sec", max(latest, 60)))
-        latest = max(MIN_LATEST_INTERVAL_SEC, latest)
-        raw_int = max(MIN_RAW_INTERVAL_SEC, raw_int)
+        poll = _as_positive_int(raw.get("poll_interval_sec", 60), 60, MIN_LATEST_INTERVAL_SEC)
+        latest = _as_positive_int(raw.get("latest_interval_sec", poll), poll, MIN_LATEST_INTERVAL_SEC)
+        raw_int = _as_positive_int(raw.get("raw_interval_sec", max(latest, 60)), max(latest, 60), MIN_RAW_INTERVAL_SEC)
 
-        shard_total = max(1, int(raw.get("shard_total", 1)))
-        shard_index = int(raw.get("shard_index", 0))
-        if shard_index < 0 or shard_index >= shard_total:
+        shard_total = _as_positive_int(raw.get("shard_total", 1), 1, 1)
+        shard_index = _as_positive_int(raw.get("shard_index", 0), 0)
+        if shard_index >= shard_total:
             shard_index = 0
+
+        local_api_secret = existing_cfg.local_api_secret
+        if "local_api_secret" in raw:
+            candidate_secret = str(raw.get("local_api_secret") or "").strip()
+            local_api_secret = candidate_secret
+
+        ip_ranges_raw = raw.get("ip_ranges", existing_cfg.ip_ranges or [])
 
         cfg = AppConfig(
             site_id=str(raw.get("site_id", existing_cfg.site_id or "site_001")),
@@ -492,32 +516,48 @@ def create_app() -> FastAPI:
             latest_interval_sec=latest,
             raw_interval_sec=raw_int,
             poll_interval_sec=latest,
-            timeout_sec=float(raw.get("timeout_sec", 5)),
-            max_retries=int(raw.get("max_retries", 5)),
-            max_workers=int(raw.get("max_workers", 50)),
-            batch_size=int(raw.get("batch_size", 1000)),
-            upload_connect_timeout_sec=float(raw.get("upload_connect_timeout_sec", 2)),
-            upload_read_timeout_sec=float(raw.get("upload_read_timeout_sec", 30)),
-            upload_workers=int(raw.get("upload_workers", 4)),
-            latest_max_miners=int(raw.get("latest_max_miners", 500)),
+            timeout_sec=_as_positive_float(raw.get("timeout_sec", existing_cfg.timeout_sec), existing_cfg.timeout_sec, 0.0),
+            max_retries=_as_positive_int(raw.get("max_retries", existing_cfg.max_retries), existing_cfg.max_retries, 0),
+            max_workers=_as_positive_int(raw.get("max_workers", existing_cfg.max_workers), existing_cfg.max_workers, 1),
+            batch_size=_as_positive_int(raw.get("batch_size", existing_cfg.batch_size), existing_cfg.batch_size, 1),
+            upload_connect_timeout_sec=_as_positive_float(
+                raw.get("upload_connect_timeout_sec", existing_cfg.upload_connect_timeout_sec),
+                existing_cfg.upload_connect_timeout_sec,
+                0.0,
+            ),
+            upload_read_timeout_sec=_as_positive_float(
+                raw.get("upload_read_timeout_sec", existing_cfg.upload_read_timeout_sec),
+                existing_cfg.upload_read_timeout_sec,
+                0.0,
+            ),
+            upload_workers=_as_positive_int(raw.get("upload_workers", existing_cfg.upload_workers), existing_cfg.upload_workers, 1),
+            latest_max_miners=_as_positive_int(raw.get("latest_max_miners", existing_cfg.latest_max_miners), existing_cfg.latest_max_miners, 1),
             shard_total=shard_total,
             shard_index=shard_index,
-            miner_timeout_fast_sec=float(raw.get("miner_timeout_fast_sec", 1.5)),
-            miner_timeout_slow_sec=float(raw.get("miner_timeout_slow_sec", 5.0)),
-            offline_backoff_base_sec=int(raw.get("offline_backoff_base_sec", 30)),
-            offline_backoff_max_sec=int(raw.get("offline_backoff_max_sec", 300)),
-            enable_commands=bool(raw.get("enable_commands", False)),
-            command_poll_interval_sec=int(raw.get("command_poll_interval_sec", 5)),
-            upload_ip_to_cloud=raw.get("upload_ip_to_cloud", False) in (True, "true", "True", 1, "1"),
-            encrypt_miners_config=raw.get("encrypt_miners_config", False) in (True, "true", "True", 1, "1"),
-            local_key_env=str(raw.get("local_key_env", "PICKAXE_LOCAL_KEY")),
-            local_api_secret=str(raw.get("local_api_secret", existing_cfg.local_api_secret or "")),
+            miner_timeout_fast_sec=_as_positive_float(
+                raw.get("miner_timeout_fast_sec", existing_cfg.miner_timeout_fast_sec),
+                existing_cfg.miner_timeout_fast_sec,
+                0.0,
+            ),
+            miner_timeout_slow_sec=_as_positive_float(
+                raw.get("miner_timeout_slow_sec", existing_cfg.miner_timeout_slow_sec),
+                existing_cfg.miner_timeout_slow_sec,
+                0.0,
+            ),
+            offline_backoff_base_sec=_as_positive_int(raw.get("offline_backoff_base_sec", existing_cfg.offline_backoff_base_sec), existing_cfg.offline_backoff_base_sec, 0),
+            offline_backoff_max_sec=_as_positive_int(raw.get("offline_backoff_max_sec", existing_cfg.offline_backoff_max_sec), existing_cfg.offline_backoff_max_sec, 0),
+            enable_commands=_as_bool(raw.get("enable_commands", existing_cfg.enable_commands)),
+            command_poll_interval_sec=_as_positive_int(raw.get("command_poll_interval_sec", existing_cfg.command_poll_interval_sec), existing_cfg.command_poll_interval_sec, 1),
+            upload_ip_to_cloud=_as_bool(raw.get("upload_ip_to_cloud", existing_cfg.upload_ip_to_cloud)),
+            encrypt_miners_config=_as_bool(raw.get("encrypt_miners_config", existing_cfg.encrypt_miners_config)),
+            local_key_env=str(raw.get("local_key_env", existing_cfg.local_key_env or "PICKAXE_LOCAL_KEY")),
+            local_api_secret=local_api_secret,
             miners=miners,
-            ip_ranges=list(raw.get("ip_ranges", [])),
+            ip_ranges=list(ip_ranges_raw) if isinstance(ip_ranges_raw, list) else existing_cfg.ip_ranges,
         )
 
         p = save_config(cfg, None)
-        return {"success": True, "config_path": str(p)}
+        return {"success": True, "config_path": str(p), "local_api_secret_set": bool(local_api_secret)}
 
     @app.post("/api/miners/test")
     def api_test_miners(payload: Dict[str, Any]) -> Dict[str, Any]:
