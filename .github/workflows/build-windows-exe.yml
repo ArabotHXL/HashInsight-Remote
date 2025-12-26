@@ -1,4 +1,4 @@
-name: Build PickaxeCollector Windows EXE
+name: build-windows-exe
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
     branches: [ "main" ]
 
 jobs:
-  build-windows-exe:
+  build:
     runs-on: windows-latest
 
     steps:
@@ -17,36 +17,28 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
 
       - name: Install dependencies
-        shell: pwsh
         run: |
-          python -m pip install -U pip wheel
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install -U pyinstaller
+          pip install pyinstaller
 
       - name: Build EXE (PyInstaller)
-        shell: pwsh
         run: |
           pyinstaller --noconfirm PickaxeCollector.spec
 
-          if (Test-Path "dist\PickaxeCollector.exe") {
-            $exePath = "dist\PickaxeCollector.exe"
-          } elseif (Test-Path "dist\PickaxeCollector\PickaxeCollector.exe") {
-            $exePath = "dist\PickaxeCollector\PickaxeCollector.exe"
-          } else {
+      - name: Verify dist output
+        shell: pwsh
+        run: |
+          if (!(Test-Path "dist/PickaxeCollector.exe")) {
             Write-Host "dist folder content:"
-            Get-ChildItem -Recurse dist | Format-List
+            Get-ChildItem dist -Recurse -ErrorAction SilentlyContinue
             throw "PickaxeCollector.exe not found in dist/"
           }
-
-          New-Item -ItemType Directory -Force -Path artifact | Out-Null
-          Copy-Item $exePath -Destination artifact\PickaxeCollector.exe -Force
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: PickaxeCollector-windows-exe
-          path: artifact/PickaxeCollector.exe
-          if-no-files-found: error
+          path: dist/PickaxeCollector.exe
