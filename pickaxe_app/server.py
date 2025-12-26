@@ -3,8 +3,8 @@ import logging
 import os
 import io
 import csv
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
@@ -141,6 +141,62 @@ def _normalize_miner_rows(rows: List[List[str]], defaults: Dict[str, Any]) -> Li
 
 logger = logging.getLogger("PickaxeLocalAPI")
 
+MAX_IMPORT_FILE_BYTES = 5 * 1024 * 1024  # 5 MB
+_IMPORT_EXT_TYPE_MAP = {
+    ".csv": "csv",
+    ".txt": "csv",
+    ".xlsx": "xlsx",
+    ".xlsm": "xlsx",
+    ".xltx": "xlsx",
+}
+_IMPORT_CONTENT_TYPE_MAP = {
+    "text/csv": "csv",
+    "text/plain": "csv",
+    "application/vnd.ms-excel": "csv",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "application/vnd.ms-excel.sheet.macroenabled.12": "xlsx",
+}
+
+
+def _validate_import_file(file: UploadFile) -> str:
+    name = (file.filename or "").lower()
+    ext = Path(name).suffix
+    ext_type = _IMPORT_EXT_TYPE_MAP.get(ext)
+    if not ext_type:
+        raise HTTPException(status_code=400, detail="Unsupported file type. Use .csv or .xlsx")
+
+    content_type = (file.content_type or "").split(";")[0].strip()
+    if content_type:
+        ct_type = _IMPORT_CONTENT_TYPE_MAP.get(content_type)
+        if ct_type is None:
+            raise HTTPException(status_code=400, detail="Unsupported content type. Use CSV or XLSX.")
+        if ct_type != ext_type:
+            raise HTTPException(status_code=400, detail="File extension/content type mismatch. Use CSV or XLSX.")
+
+    return ext_type
+
+
+async def _read_upload_file_chunks(file: UploadFile, max_bytes: int = MAX_IMPORT_FILE_BYTES) -> bytes:
+    total = 0
+    chunks: List[bytes] = []
+    chunk_size = 1024 * 1024
+
+    while True:
+        chunk = await file.read(chunk_size)
+        if not chunk:
+            break
+
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(status_code=413, detail="File too large. Maximum 5 MB allowed.")
+
+        chunks.append(chunk)
+
+    data = b"".join(chunks)
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file")
+    return data
+
 
 def _data_dir() -> Path:
     return get_config_path(None).parent
@@ -227,21 +283,27 @@ def create_app() -> FastAPI:
             Expected columns (any order, header optional): miner_id, ip, port, type
             If only a single column is present, it's treated as ip or ip:port.
             """
-            name = (file.filename or "").lower()
-            content = await file.read()
-            if not content:
-                raise HTTPException(status_code=400, detail="Empty file")
+            ext_type = _validate_import_file(file)
+
+            header_length = file.headers.get("content-length") if file.headers else None
+            if header_length:
+                try:
+                    if int(header_length) > MAX_IMPORT_FILE_BYTES:
+                        raise HTTPException(status_code=413, detail="File too large. Maximum 5 MB allowed.")
+                except ValueError:
+                    pass
+            content = await _read_upload_file_chunks(file)
 
             defaults = {"port": default_port, "type": default_type, "id_prefix": id_prefix}
 
             rows: List[List[str]] = []
             try:
-                if name.endswith(".csv") or name.endswith(".txt"):
+                if ext_type == "csv":
                     text = content.decode("utf-8", errors="ignore")
                     reader = csv.reader(io.StringIO(text))
                     for r in reader:
                         rows.append([c for c in r])
-                elif name.endswith(".xlsx") or name.endswith(".xlsm") or name.endswith(".xltx"):
+                elif ext_type == "xlsx":
                     try:
                         from openpyxl import load_workbook
                     except Exception as e:
