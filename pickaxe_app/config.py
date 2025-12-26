@@ -105,6 +105,8 @@ class AppConfig:
     # Privacy: whether to include miner IP address in uploads to the cloud
     upload_ip_to_cloud: bool = False
     local_key_env: str = DEFAULT_KEY_ENV
+    # Local API auth (protects start/stop/status/logs endpoints)
+    local_api_secret: str = ""
 
     # Miner sources
     miners: List[MinerConfig] = None  # type: ignore
@@ -195,6 +197,7 @@ def load_config(path: Optional[str] = None) -> AppConfig:
         encrypt_miners_config=bool(raw.get("encrypt_miners_config", False)),
         upload_ip_to_cloud=bool(raw.get("upload_ip_to_cloud", False)),
         local_key_env=str(raw.get("local_key_env") or DEFAULT_KEY_ENV),
+        local_api_secret=str(raw.get("local_api_secret", "")),
         ip_ranges=raw.get("ip_ranges") or [],
     )
 

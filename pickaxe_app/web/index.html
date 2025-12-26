@@ -329,6 +329,14 @@
             </div>
           </div>
 
+          <div class="row">
+            <div class="col">
+              <label>Local API Secret (protects Start/Stop/Status/Logs)</label>
+              <input id="local_api_secret" placeholder="set a long random string" />
+              <div class="muted" style="margin-top:4px;">Header: Authorization: Bearer &lt;secret&gt;. Leave blank to configure via env PICKAXE_LOCAL_SECRET.</div>
+            </div>
+          </div>
+
 
           <div class="row">
             <div class="col">

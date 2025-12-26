@@ -37,11 +37,33 @@ function getBoolSelect(id, def=false){
 }
 
 
-function getStr(id, def=""){
+function getStr(id, def=""){ 
   const e = el(id);
   if(!e) return def;
   const v = (e.value ?? "").toString().trim();
   return v.length ? v : def;
+}
+
+function getLocalApiSecret(){
+  // Prefer the current form value, fall back to the last loaded config.
+  const formVal = getStr("local_api_secret", "");
+  if(formVal) return formVal;
+  if(LOADED_CONFIG && LOADED_CONFIG.local_api_secret){
+    return LOADED_CONFIG.local_api_secret;
+  }
+  return "";
+}
+
+function authHeaders(includeCsrf=true){
+  const secret = getLocalApiSecret();
+  const headers = {};
+  if(secret){
+    headers["Authorization"] = `Bearer ${secret}`;
+    if(includeCsrf){
+      headers["X-CSRF-Token"] = secret;
+    }
+  }
+  return headers;
 }
 
 function getNum(id, def){
@@ -411,6 +433,7 @@ function writeFormConfig(cfg){
   setBoolSelect("upload_ip_to_cloud", c.upload_ip_to_cloud ?? false);
   setBoolSelect("encrypt_miners_config", c.encrypt_miners_config ?? false);
   setVal("local_key_env", c.local_key_env ?? 'PICKAXE_LOCAL_KEY');
+  setVal("local_api_secret", c.local_api_secret ?? "");
 
   // Server-advertised limits -> HTML min attributes
   if(LIMITS){
@@ -457,6 +480,7 @@ function readFormConfigPartial(){
   if(has("upload_ip_to_cloud")) cfg.upload_ip_to_cloud = getBoolSelect("upload_ip_to_cloud", false);
   if(has("encrypt_miners_config")) cfg.encrypt_miners_config = getBoolSelect("encrypt_miners_config", false);
   if(has("local_key_env")) cfg.local_key_env = getStr("local_key_env", 'PICKAXE_LOCAL_KEY');
+  if(has("local_api_secret")) cfg.local_api_secret = getStr("local_api_secret", "");
 
   cfg.miners = readMinersTable();
   return cfg;
@@ -506,7 +530,7 @@ async function saveConfig(){
 
     const res = await fetch("/api/config", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: Object.assign({ "Content-Type": "application/json" }, authHeaders(true)),
       body: JSON.stringify({ config: merged })
     });
 
@@ -538,7 +562,7 @@ async function startCollector(){
       return;
     }
 
-    const res = await fetch("/api/collector/start", { method: "POST" });
+    const res = await fetch("/api/collector/start", { method: "POST", headers: authHeaders(true) });
     const t = await res.text();
     msg("run_msg", res.ok ? "Started" : `Start failed: ${t}`);
   } catch (e) {
@@ -550,7 +574,7 @@ async function startCollector(){
 async function stopCollector(){
   msg("run_msg", "Stopping...");
   try {
-    const res = await fetch("/api/collector/stop", { method: "POST" });
+    const res = await fetch("/api/collector/stop", { method: "POST", headers: authHeaders(true) });
     const t = await res.text();
     msg("run_msg", res.ok ? "Stopped" : `Stop failed: ${t}`);
   } catch (e) {
@@ -561,7 +585,7 @@ async function stopCollector(){
 
 async function refreshStatus(){
   try {
-    const status = await fetch("/api/status");
+    const status = await fetch("/api/status", { headers: authHeaders(false) });
     const j = await status.json();
     if(el("status_json")) el("status_json").innerText = JSON.stringify(j, null, 2);
   } catch (e) {
@@ -570,7 +594,7 @@ async function refreshStatus(){
 
   // Tail logs
   try {
-    const logs = await fetch("/api/logs?lines=220");
+    const logs = await fetch("/api/logs?lines=220", { headers: authHeaders(false) });
     // UI compatibility: some versions used id="log_tail" instead of id="logs"
     const lp = el("logs") || el("log_tail");
     if(lp) {
