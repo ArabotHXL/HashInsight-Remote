@@ -24,6 +24,12 @@ See `docs/README_END_TO_END.md`.
 - Local miner list encryption is **optional**. This build defaults to plaintext local config for reliability.
 - To encrypt the local miners list at rest, set an environment variable `PICKAXE_LOCAL_KEY` (32-byte key, base64 or hex).
 
+## Security (local API auth)
+
+- Protect sensitive local actions (`/api/collector/start`, `/api/collector/stop`, `/api/status`, `/api/logs`) with a **local API secret**.
+- Set it in the UI (Advanced → Local API Secret) or via environment variable `PICKAXE_LOCAL_SECRET` (takes priority over the saved value).
+- Clients must send `Authorization: Bearer <secret>`; browser-based calls also send `X-CSRF-Token: <secret>` automatically from the bundled UI.
+
 Example (PowerShell):
 
 ```powershell

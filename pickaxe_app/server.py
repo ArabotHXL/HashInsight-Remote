@@ -7,7 +7,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, UploadFile, File
 from . import __version__
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -224,6 +224,62 @@ def tail_file(path: Path, lines: int = 200) -> str:
         return ""
 
 
+def _get_local_api_secret() -> str:
+    """Return the configured local API secret, preferring env override."""
+
+    env_secret = os.getenv("PICKAXE_LOCAL_SECRET", "").strip()
+    if env_secret:
+        return env_secret
+
+    try:
+        cfg = load_config(None)
+        return (cfg.local_api_secret or "").strip()
+    except Exception:
+        return ""
+
+
+def _requires_csrf_check(request: Request) -> bool:
+    # If the request originates from a browser context, enforce a CSRF token header
+    # to mitigate cross-site POSTs even when the secret is known to the page.
+    return bool(request.headers.get("Origin") or request.headers.get("Referer"))
+
+
+def require_local_auth(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    x_api_key: Optional[str] = Header(None),
+    x_local_secret: Optional[str] = Header(None),
+    x_csrf_token: Optional[str] = Header(None),
+) -> None:
+    secret = _get_local_api_secret()
+    if not secret:
+        raise HTTPException(status_code=401, detail="Local API secret is not configured")
+
+    candidate = ""
+    if authorization:
+        auth = authorization.strip()
+        if auth.lower().startswith("bearer "):
+            candidate = auth[7:].strip()
+    if not candidate and x_api_key:
+        candidate = x_api_key.strip()
+    if not candidate and x_local_secret:
+        candidate = x_local_secret.strip()
+
+    if not candidate:
+        raise HTTPException(status_code=401, detail="Missing credentials")
+    if candidate != secret:
+        raise HTTPException(status_code=403, detail="Invalid credentials")
+
+    if _requires_csrf_check(request):
+        csrf = (x_csrf_token or "").strip()
+        if not csrf:
+            csrf = (request.headers.get("X-CSRF-Token") or "").strip()
+        if not csrf:
+            raise HTTPException(status_code=403, detail="Missing CSRF token")
+        if csrf != secret:
+            raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
+
 def create_app() -> FastAPI:
     dd = _data_dir()
     log_file = setup_logging(_log_dir())
@@ -366,6 +422,7 @@ def create_app() -> FastAPI:
                 "upload_ip_to_cloud": cfg.upload_ip_to_cloud,
                 "encrypt_miners_config": cfg.encrypt_miners_config,
                 "local_key_env": cfg.local_key_env,
+                "local_api_secret": cfg.local_api_secret,
                 "miners": [m.__dict__ for m in cfg.miners],
                 "ip_ranges": cfg.ip_ranges,
             },
@@ -435,6 +492,7 @@ def create_app() -> FastAPI:
             upload_ip_to_cloud=raw.get("upload_ip_to_cloud", False) in (True, "true", "True", 1, "1"),
             encrypt_miners_config=raw.get("encrypt_miners_config", False) in (True, "true", "True", 1, "1"),
             local_key_env=str(raw.get("local_key_env", "PICKAXE_LOCAL_KEY")),
+            local_api_secret=str(raw.get("local_api_secret", "")),
             miners=miners,
             ip_ranges=list(raw.get("ip_ranges", [])),
         )
@@ -540,7 +598,7 @@ def create_app() -> FastAPI:
         return {"start": start, "end": end, "total": total, "returned": len(ips), "ips": ips}
 
     @app.post("/api/collector/start")
-    def api_start() -> Dict[str, Any]:
+    def api_start(_auth: None = Depends(require_local_auth)) -> Dict[str, Any]:
         cfg = load_config(None)
         if not cfg.cloud_api_base or not cfg.collector_token:
             raise HTTPException(status_code=400, detail="cloud_api_base and collector_token are required")
@@ -551,15 +609,15 @@ def create_app() -> FastAPI:
         return runner.start(cfg)
 
     @app.post("/api/collector/stop")
-    def api_stop() -> Dict[str, Any]:
+    def api_stop(_auth: None = Depends(require_local_auth)) -> Dict[str, Any]:
         return runner.stop()
 
     @app.get("/api/status")
-    def api_status() -> Dict[str, Any]:
+    def api_status(_auth: None = Depends(require_local_auth)) -> Dict[str, Any]:
         return runner.status()
 
     @app.get("/api/logs", response_class=PlainTextResponse)
-    def api_logs(lines: int = 200) -> str:
+    def api_logs(lines: int = 200, _auth: None = Depends(require_local_auth)) -> str:
         return tail_file(log_file, lines=lines)
 
     return app
