@@ -357,6 +357,23 @@ class OfflineCache:
             return cursor.fetchall()
         finally:
             conn.close()
+
+    def count_pending_batches(self, max_retry: int = 5) -> int:
+        """Return number of pending cached batches.
+
+        A batch is considered pending when retry_count < max_retry.
+        """
+        conn = sqlite3.connect(str(self.db_path))
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                'SELECT COUNT(*) FROM pending_uploads WHERE retry_count < ?',
+                (max_retry,)
+            )
+            row = cursor.fetchone()
+            return int(row[0] if row and row[0] is not None else 0)
+        finally:
+            conn.close()
     
     def mark_uploaded(self, batch_id: str):
         """标记批次已上传"""
@@ -842,7 +859,38 @@ class EdgeCollector:
                 miners = miners[start:] + miners[: (end % len(miners))]
             self._latest_cursor = (start + window) % len(self.miners)
 
-        logger.info(f"Starting {mode} collection for {len(miners)} miners (total configured={len(self.miners)})...")
+        # Filter miners by offline backoff before enqueueing worker tasks. This avoids
+        # burning threadpool slots on miners that are intentionally skipped and makes
+        # logs/UI easier to interpret.
+        now = time.time()
+        due_miners: List[Dict] = []
+        skipped_backoff = 0
+        for m in miners:
+            miner_id = m.get('id') or m.get('miner_id') or m.get('name')
+            # If we cannot identify the miner deterministically, probe it.
+            if not miner_id:
+                due_miners.append(m)
+                continue
+            if self._is_miner_due(str(miner_id), now):
+                due_miners.append(m)
+            else:
+                skipped_backoff += 1
+
+        # Persist last-cycle counts for UI/status endpoints
+        self._last_window_total = len(miners)
+        self._last_due_total = len(due_miners)
+        self._last_skipped_backoff = skipped_backoff
+
+        miners = due_miners
+        logger.info(
+            f"Starting {mode} collection for {len(miners)} due miners "
+            f"(skipped_backoff={skipped_backoff}, window_total={self._last_window_total}, "
+            f"total_configured={len(self.miners)})..."
+        )
+
+        # If nothing is due, exit quickly.
+        if not miners:
+            return []
 
         executor: Optional[ThreadPoolExecutor] = None
         future_to_miner: Dict[Any, Dict] = {}
@@ -987,14 +1035,26 @@ class EdgeCollector:
             self.retry_pending_uploads()
             self._last_retry_ts = now
 
+        # Expose helpful counters for diagnostics/UI.
+        pending_cached = self.cache.count_pending_batches(max_retry=self.max_retries)
+        configured = len(self.miners)
+        window_total = getattr(self, '_last_window_total', configured)
+        due = getattr(self, '_last_due_total', configured)
+        skipped_backoff = getattr(self, '_last_skipped_backoff', 0)
+
         elapsed_ms = int((time.time() - t0) * 1000)
         
         return {
             'mode': mode,
+            'configured': configured,
+            'window_total': window_total,
+            'due': due,
+            'skipped_backoff': skipped_backoff,
             'collected': len(data),
             'online': sum(1 for d in data if d.online),
             'offline': sum(1 for d in data if not d.online),
             'upload_success': success,
+            'pending_cached': pending_cached,
             'processing_time_ms': elapsed_ms,
             'timestamp': datetime.utcnow().isoformat()
         }
