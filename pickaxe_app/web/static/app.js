@@ -647,8 +647,147 @@ async function testConnections(){
   }
 }
 
+// ----- Local API Secret handling (required for Save/Start/Stop) -----
+const LOCAL_SECRET_STORAGE_KEY = "pickaxe_local_api_secret";
+
+function getLocalSecret(){
+  try { return (localStorage.getItem(LOCAL_SECRET_STORAGE_KEY) || "").trim(); } catch(e){ return ""; }
+}
+
+function setLocalSecret(val){
+  const v = (val || "").trim();
+  try{
+    if(v) localStorage.setItem(LOCAL_SECRET_STORAGE_KEY, v);
+    else localStorage.removeItem(LOCAL_SECRET_STORAGE_KEY);
+  }catch(e){}
+}
+
+async function apiFetch(path, opts){
+  const o = opts ? {...opts} : {};
+  o.headers = o.headers ? {...o.headers} : {};
+  const sec = getLocalSecret();
+  if(sec){
+    o.headers["X-Local-API-Secret"] = sec;
+  }
+  return fetch(path, o);
+}
+
+function setHint(text){
+  const h = el("local_secret_hint");
+  if(h) h.innerText = text || "";
+}
+
+async function refreshLocalSecretStatus(){
+  const input = el("local_api_secret");
+  const stored = getLocalSecret();
+  if(input && !input.value && stored) input.value = stored;
+
+  try{
+    const res = await fetch("/api/local-secret");
+    if(!res.ok){
+      const t = await res.text();
+      setHint(`Local secret status check failed: HTTP ${res.status} ${t}`);
+      return;
+    }
+    const data = await res.json();
+    const configured = !!data.configured;
+
+    if(!configured){
+      setHint("Local API Secret is not configured yet. Click Generate (recommended) or paste one and click Set.");
+      return;
+    }
+
+    if(stored){
+      setHint("Local API Secret is configured. This browser has a copy, so Save/Start/Stop will work.");
+    } else {
+      setHint("Local API Secret is configured on this machine, but this browser has no copy. Paste the current secret and click Set (store only) so Save/Start/Stop can work.");
+    }
+  }catch(e){
+    setHint(`Local secret status check failed: ${String(e)}`);
+  }
+}
+
+async function onSetSecret(){
+  const input = el("local_api_secret");
+  const entered = (input?.value || "").trim();
+  if(!entered){
+    setHint("Please enter a secret first (or click Generate).");
+    return;
+  }
+
+  // Always store locally first.
+  setLocalSecret(entered);
+
+  try{
+    // If server is not configured yet, bootstrap it (no auth required for first-time set).
+    const stRes = await fetch("/api/local-secret");
+    const st = stRes.ok ? await stRes.json() : {configured: true};
+
+    if(!st.configured){
+      const res = await fetch("/api/local-secret", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({secret: entered})
+      });
+      if(!res.ok){
+        const t = await res.text();
+        setHint(`Set failed: HTTP ${res.status} ${t}`);
+        return;
+      }
+      const data = await res.json();
+      if(data.secret){
+        setLocalSecret(data.secret);
+        if(input) input.value = data.secret;
+      }
+      setHint("Local API Secret configured. You can now Save Config and Start.");
+      return;
+    }
+
+    // Otherwise, just validate the stored secret against a protected endpoint.
+    const check = await apiFetch("/api/status");
+    if(check.ok){
+      setHint("Local API Secret saved in this browser (validated). You can now Save Config / Start.");
+    }else{
+      const t = await check.text();
+      setHint(`Secret saved locally, but validation failed: HTTP ${check.status} ${t}`);
+    }
+  }catch(e){
+    setHint(`Secret saved locally, but validation failed: ${String(e)}`);
+  }
+}
+
+async function onGenerateSecret(){
+  try{
+    setHint("Generating secret...");
+    const res = await apiFetch("/api/local-secret", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({generate: true})
+    });
+    if(!res.ok){
+      const t = await res.text();
+      setHint(`Generate failed: HTTP ${res.status} ${t}`);
+      return;
+    }
+    const data = await res.json();
+    const sec = (data.secret || "").trim();
+    if(!sec){
+      setHint("Generate failed: server did not return a secret.");
+      return;
+    }
+    setLocalSecret(sec);
+    const input = el("local_api_secret");
+    if(input) input.value = sec;
+    setHint("Local API Secret generated and configured. You can now Save Config and Start.");
+  }catch(e){
+    setHint(`Generate failed: ${String(e)}`);
+  }
+}
+
 function bind(){
   el("btn_save")?.addEventListener("click", saveConfig);
+  el("btn_set_secret")?.addEventListener("click", onSetSecret);
+  el("btn_gen_secret")?.addEventListener("click", onGenerateSecret);
   el("btn_start")?.addEventListener("click", startCollector);
   el("btn_stop")?.addEventListener("click", stopCollector);
   el("btn_add_miner")?.addEventListener("click", () => addMinerRow(null));
