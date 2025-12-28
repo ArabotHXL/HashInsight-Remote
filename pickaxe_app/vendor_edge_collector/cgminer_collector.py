@@ -759,12 +759,19 @@ class EdgeCollector:
             'last_collection': None
         }
     
-    def _is_miner_due(self, miner_id: str, now: Optional[float] = None) -> bool:
+    def _is_miner_due(self, miner_id: str, now: 'Optional[float]' = None) -> bool:
+        """Return True if this miner should be attempted now (offline backoff gate).
+
+        Supports both call styles:
+          - _is_miner_due(miner_id)
+          - _is_miner_due(miner_id, now)
+        """
         st = self._miner_health.get(miner_id)
         if not st:
             return True
-        t = time.time() if now is None else float(now)
-        return t >= float(st.get('next_allowed', 0.0))
+        if now is None:
+            now = time.time()
+        return float(now) >= float(st.get('next_allowed', 0.0))
 
     def _mark_miner_failure(self, miner_id: str) -> None:
         st = self._miner_health.setdefault(miner_id, {'fails': 0, 'next_allowed': 0.0})
