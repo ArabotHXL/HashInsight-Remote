@@ -1,14 +1,12 @@
-name: Build PickaxeCollector Windows EXE
+name: build
 
 on:
   workflow_dispatch:
   push:
     branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
 
 jobs:
-  build-windows-exe:
+  build:
     runs-on: windows-latest
 
     steps:
@@ -19,37 +17,28 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
 
       - name: Install dependencies
         shell: pwsh
         run: |
-          python -m pip install -U pip wheel
-          pip install -r requirements.txt
-          pip install -U pyinstaller
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-build.txt
+          python -c "import fastapi, uvicorn; print('Python deps OK')"
 
       - name: Build EXE (PyInstaller)
         shell: pwsh
         run: |
-          pyinstaller --noconfirm PickaxeCollector.spec
+          pyinstaller --clean --noconfirm PickaxeCollector.spec
 
-          if (Test-Path "dist\PickaxeCollector.exe") {
-            $exePath = "dist\PickaxeCollector.exe"
-          } elseif (Test-Path "dist\PickaxeCollector\PickaxeCollector.exe") {
-            $exePath = "dist\PickaxeCollector\PickaxeCollector.exe"
-          } else {
-            Write-Host "dist folder content:"
-            Get-ChildItem -Recurse dist | Format-List
-            throw "PickaxeCollector.exe not found in dist/"
-          }
-
-          New-Item -ItemType Directory -Force -Path artifact | Out-Null
-          Copy-Item $exePath -Destination artifact\PickaxeCollector.exe -Force
-          Write-Host "EXE packaged at artifact\PickaxeCollector.exe"
+      - name: Verify dist output
+        shell: pwsh
+        run: |
+          if (!(Test-Path dist/PickaxeCollector/PickaxeCollector.exe)) { throw "PickaxeCollector.exe not found under dist/PickaxeCollector/" }
+          Get-ChildItem dist/PickaxeCollector | Select-Object Name,Length
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PickaxeCollector-windows-exe
-          path: artifact/PickaxeCollector.exe
-          if-no-files-found: error
+          name: PickaxeCollector-windows
+          path: dist/PickaxeCollector
