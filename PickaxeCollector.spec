@@ -5,7 +5,7 @@ from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
 block_cipher = None
 
-ROOT = Path(__file__).resolve().parent
+REPO_ROOT = Path(globals().get("SPECPATH", ".")).resolve()
 
 hiddenimports = []
 hiddenimports += collect_submodules("pickaxe_app")
@@ -18,7 +18,7 @@ datas += collect_data_files("pickaxe_app", include_py_files=False)
 
 a = Analysis(
     ["collector_entry.py"],
-    pathex=[str(ROOT)],
+    pathex=[str(REPO_ROOT)],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
