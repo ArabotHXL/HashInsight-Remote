@@ -1,6 +1,21 @@
-fastapi==0.115.6
-uvicorn[standard]==0.30.6
-requests>=2.31.0
-python-multipart>=0.0.9
-cryptography>=42.0.0
-openpyxl>=3.1.0
+@echo off
+setlocal enabledelayedexpansion
+
+REM HashInsight Pickaxe Collector - local runner (Windows)
+
+if not exist .venv (
+  echo Creating virtualenv...
+  python -m venv .venv
+)
+
+call .venv\Scripts\activate
+
+echo Installing/updating dependencies...
+python -m pip install --upgrade pip >nul 2>&1
+pip install -r requirements.txt
+
+echo Starting Pickaxe UI on http://127.0.0.1:8711
+python -m pickaxe_app.main
+
+REM Keep window open so errors are visible
+pause

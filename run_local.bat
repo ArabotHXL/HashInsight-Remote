@@ -1,21 +1,16 @@
-@echo off
-setlocal enabledelayedexpansion
+#!/usr/bin/env bash
+set -e
 
-REM HashInsight Pickaxe Collector - local runner (Windows)
-
-if not exist .venv (
-  echo Creating virtualenv...
+if [ ! -d ".venv" ]; then
+  echo "Creating virtualenv..."
   python -m venv .venv
-)
+fi
 
-call .venv\Scripts\activate
+source .venv/bin/activate
 
-echo Installing/updating dependencies...
-python -m pip install --upgrade pip >nul 2>&1
+echo "Installing/updating dependencies..."
+python -m pip install --upgrade pip >/dev/null 2>&1 || true
 pip install -r requirements.txt
 
-echo Starting Pickaxe UI on http://127.0.0.1:8711
+echo "Starting Pickaxe UI on http://127.0.0.1:8711"
 python -m pickaxe_app.main
-
-REM Keep window open so errors are visible
-pause

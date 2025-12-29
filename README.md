@@ -1,36 +1,44 @@
-# HashInsight Pickaxe Collector (v0.3.8)
+name: build
 
-A lightweight local collector app for mining farms:
-- Connect to miners by IP (CGMiner API, default port 4028)
-- Pull telemetry continuously
-- Upload to your HashInsight cloud app over HTTPS
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
 
-## Quick start
-- Windows: run `run_local.bat`
-- macOS/Linux: run `./run_local.sh`
+jobs:
+  build:
+    runs-on: windows-latest
 
-Then open `http://127.0.0.1:8711`.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-## Documentation
-See `docs/README_END_TO_END.md`.
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-build.txt
+          python -c "import fastapi, uvicorn; print('Python deps OK')"
 
-## Security (IP handling)
+      - name: Build EXE (PyInstaller)
+        shell: pwsh
+        run: |
+          pyinstaller --clean --noconfirm PickaxeCollector.spec
 
-- By default, Pickaxe keeps miner IPs **local** and does **not** upload them to the cloud.
+      - name: Verify dist output
+        shell: pwsh
+        run: |
+          if (!(Test-Path dist/PickaxeCollector/PickaxeCollector.exe)) { throw "PickaxeCollector.exe not found under dist/PickaxeCollector/" }
+          Get-ChildItem dist/PickaxeCollector | Select-Object Name,Length
 
-## Security (local config encryption)
-
-- Local miner list encryption is **optional**. This build defaults to plaintext local config for reliability.
-- To encrypt the local miners list at rest, set an environment variable `PICKAXE_LOCAL_KEY` (32-byte key, base64 or hex).
-
-Example (PowerShell):
-
-```powershell
-# generate a random 32-byte key and set env var for this session
-python - <<'PY'
-import os,base64,secrets
-print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode().rstrip('='))
-PY
-$env:PICKAXE_LOCAL_KEY = "<paste key>"
-```
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PickaxeCollector-windows
+          path: dist/PickaxeCollector

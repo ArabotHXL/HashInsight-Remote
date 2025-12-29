@@ -3,7 +3,28 @@ import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_submodules
-from PyInstaller.building.datastruct import Tree
+
+
+def _collect_tree_as_datas(src_dir: Path, dest_prefix: str):
+    """Return PyInstaller Analysis.datas entries as (src_file, dest_dir) 2-tuples.
+
+    Why: Recent PyInstaller versions are stricter about 'datas' entry formats.
+    Some helpers (e.g., Tree()) can yield 3-tuples internally, which can break
+    builds in certain environments. This helper always returns 2-tuples.
+    """
+    out = []
+    if not src_dir.exists():
+        return out
+
+    src_dir = src_dir.resolve()
+    for p in src_dir.rglob("*"):
+        if not p.is_file():
+            continue
+        rel_parent = p.relative_to(src_dir).parent
+        # 'dest' is a directory inside the bundle
+        dest_dir = (Path(dest_prefix) / rel_parent).as_posix()
+        out.append((str(p), dest_dir))
+    return out
 
 block_cipher = None
 
@@ -19,7 +40,7 @@ for pkg in ("uvicorn", "fastapi", "starlette"):
 datas = []
 web_dir = ROOT / "pickaxe_app" / "web"
 if web_dir.exists():
-    datas.append(Tree(str(web_dir), prefix="pickaxe_app/web"))
+    datas += _collect_tree_as_datas(web_dir, "pickaxe_app/web")
 
 a = Analysis(
     ["collector_entry.py"],
