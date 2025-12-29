@@ -1,41 +1,33 @@
 # -*- mode: python ; coding: utf-8 -*-
-import sys
-from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_submodules
-from PyInstaller.building.datastruct import Tree
-
-# -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
 block_cipher = None
 
-REPO_ROOT = Path(globals().get("SPECPATH", ".")).resolve()
-
-ENTRY = REPO_ROOT / "collector_entry.py"
-if not ENTRY.exists():
-    raise SystemExit(f"Missing {ENTRY}. Add collector_entry.py at repo root.")
-
-datas = [
-    (str(REPO_ROOT / "pickaxe_app" / "web"), "pickaxe_app/web"),
-]
+ROOT = Path(__file__).resolve().parent
 
 hiddenimports = []
 hiddenimports += collect_submodules("pickaxe_app")
-hiddenimports += collect_submodules("uvicorn")
-hiddenimports += collect_submodules("fastapi")
-hiddenimports += collect_submodules("starlette")
+# Safety: vendor collector modules are dynamically imported in a few places.
+hiddenimports += collect_submodules("pickaxe_app.vendor_edge_collector")
+
+datas = []
+# Include static UI assets (pickaxe_app/static/*) and any other non-.py package files.
+datas += collect_data_files("pickaxe_app", include_py_files=False)
 
 a = Analysis(
-    [str(ENTRY)],
-    pathex=[str(REPO_ROOT)],
+    ["collector_entry.py"],
+    pathex=[str(ROOT)],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
+    hooksconfig={},
     runtime_hooks=[],
     excludes=[],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
     cipher=block_cipher,
     noarchive=False,
 )
@@ -45,11 +37,23 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
+    [],
+    exclude_binaries=True,
+    name="PickaxeCollector",
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    console=True,
+)
+
+coll = COLLECT(
+    exe,
     a.binaries,
     a.zipfiles,
     a.datas,
-    [],
-    name="PickaxeCollector",
-    console=True,
+    strip=False,
     upx=True,
+    upx_exclude=[],
+    name="PickaxeCollector",
 )
