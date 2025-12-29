@@ -1,4 +1,58 @@
-from pickaxe_app.main import run
+name: Build Windows EXE
 
-if __name__ == "__main__":
-    run()
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "requirements.txt (first 30 lines)"
+          Get-Content requirements.txt -TotalCount 30
+
+          $reqText = (Get-Content requirements.txt -Raw).ToLower()
+          if ($reqText -match "@echo off") {
+            throw "requirements.txt contains batch content (@echo off). Restore requirements.txt to Python packages only."
+          }
+
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pyinstaller==6.7.0 pyinstaller-hooks-contrib==2025.11
+
+          python -m pip check
+          python -c "import fastapi, uvicorn; print('deps-ok', fastapi.__version__, uvicorn.__version__)"
+
+      - name: Build EXE (PyInstaller)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          pyinstaller --clean --noconfirm PickaxeCollector.spec
+
+      - name: Verify dist output
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (!(Test-Path "dist/PickaxeCollector.exe")) { throw "dist/PickaxeCollector.exe not found" }
+          Get-Item "dist/PickaxeCollector.exe" | Format-List
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PickaxeCollector-windows
+          path: dist/PickaxeCollector.exe
