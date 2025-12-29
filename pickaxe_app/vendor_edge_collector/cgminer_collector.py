@@ -43,8 +43,6 @@ class MinerData:
     """矿机数据结构"""
     miner_id: str
     ip_address: str
-    serial_number: Optional[str] = None
-    mac_address: Optional[str] = None
     timestamp: str
     online: bool
     hashrate_ghs: float = 0.0
@@ -262,28 +260,6 @@ class MinerDataParser:
                 data.uptime_seconds = s.get('Elapsed', 0)
             
             if stats and 'STATS' in stats:
-                # Identity fields (best-effort; varies by firmware)
-                try:
-                    for stat in stats.get('STATS', []):
-                        if not isinstance(stat, dict):
-                            continue
-                        if not data.serial_number:
-                            for k in ('Serial', 'Serial Number', 'SN', 'serial', 'serial_number'):
-                                v = stat.get(k)
-                                if isinstance(v, str) and v.strip():
-                                    data.serial_number = v.strip()
-                                    break
-                        if not data.mac_address:
-                            for k in ('MAC', 'Mac', 'mac', 'mac_address'):
-                                v = stat.get(k)
-                                if isinstance(v, str) and v.strip():
-                                    data.mac_address = v.strip()
-                                    break
-                        if data.serial_number and data.mac_address:
-                            break
-                except Exception:
-                    pass
-
                 temps = []
                 fans = []
                 freqs = []
@@ -1219,21 +1195,7 @@ def create_sample_config(output_path: str = "collector_config.json"):
         "ip_ranges": [
             {"range": "192.168.1.100-192.168.1.199", "prefix": "S19_", "type": "antminer"},
             {"range": "192.168.2.100-192.168.2.199", "prefix": "M30_", "type": "whatsminer"}
-        ],
-
-        "upload_enabled": true,
-        "upload_api_url": "https://YOUR_CLOUD_DOMAIN/api/collector/upload",
-        "upload_api_key": "YOUR_COLLECTOR_KEY",
-        "upload_site_id": 1,
-
-        "upload_include_ip": false,
-        "upload_batch_size": 200,
-        "upload_connect_timeout": 5.0,
-        "upload_read_timeout": 60.0,
-        "upload_max_retries": 3,
-
-        "shard_total": 1,
-        "shard_index": 0
+        ]
     }
     
     with open(output_path, 'w') as f:

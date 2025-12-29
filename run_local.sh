@@ -1,46 +1,16 @@
-name: Build PickaxeCollector Windows EXE
+#!/usr/bin/env bash
+set -e
 
-on:
-  workflow_dispatch:
-  push:
-    branches: ["main"]
+if [ ! -d ".venv" ]; then
+  echo "Creating virtualenv..."
+  python -m venv .venv
+fi
 
-jobs:
-  build:
-    runs-on: windows-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+source .venv/bin/activate
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+echo "Installing/updating dependencies..."
+python -m pip install --upgrade pip >/dev/null 2>&1 || true
+pip install -r requirements.txt
 
-      - name: Install dependencies
-        shell: pwsh
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller==6.17.0
-
-      - name: Build EXE (PyInstaller)
-        shell: pwsh
-        run: |
-          pyinstaller --clean --noconfirm PickaxeCollector.spec
-
-      - name: Verify dist output
-        shell: pwsh
-        run: |
-          if (!(Test-Path "dist/PickaxeCollector.exe")) {
-            Write-Host "dist tree:"
-            Get-ChildItem -Recurse dist | Format-List
-            throw "PickaxeCollector.exe not found at dist/PickaxeCollector.exe"
-          }
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: PickaxeCollector-windows-exe
-          path: dist/PickaxeCollector.exe
-          if-no-files-found: error
+echo "Starting Pickaxe UI on http://127.0.0.1:8711"
+python -m pickaxe_app.main

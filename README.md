@@ -1,55 +1,36 @@
-name: Build PickaxeCollector Windows EXE
+# HashInsight Pickaxe Collector (v0.3.8)
 
-on:
-  workflow_dispatch:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+A lightweight local collector app for mining farms:
+- Connect to miners by IP (CGMiner API, default port 4028)
+- Pull telemetry continuously
+- Upload to your HashInsight cloud app over HTTPS
 
-jobs:
-  build-windows-exe:
-    runs-on: windows-latest
+## Quick start
+- Windows: run `run_local.bat`
+- macOS/Linux: run `./run_local.sh`
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+Then open `http://127.0.0.1:8711`.
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: "pip"
+## Documentation
+See `docs/README_END_TO_END.md`.
 
-      - name: Install dependencies
-        shell: pwsh
-        run: |
-          python -m pip install -U pip wheel
-          pip install -r requirements.txt
-          pip install -U pyinstaller
 
-      - name: Build EXE (PyInstaller)
-        shell: pwsh
-        run: |
-          pyinstaller --noconfirm PickaxeCollector.spec
+## Security (IP handling)
 
-          if (Test-Path "dist\PickaxeCollector.exe") {
-            $exePath = "dist\PickaxeCollector.exe"
-          } elseif (Test-Path "dist\PickaxeCollector\PickaxeCollector.exe") {
-            $exePath = "dist\PickaxeCollector\PickaxeCollector.exe"
-          } else {
-            Write-Host "dist folder content:"
-            Get-ChildItem -Recurse dist | Format-List
-            throw "PickaxeCollector.exe not found in dist/"
-          }
+- By default, Pickaxe keeps miner IPs **local** and does **not** upload them to the cloud.
 
-          New-Item -ItemType Directory -Force -Path artifact | Out-Null
-          Copy-Item $exePath -Destination artifact\PickaxeCollector.exe -Force
-          Write-Host "EXE packaged at artifact\PickaxeCollector.exe"
+## Security (local config encryption)
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: PickaxeCollector-windows-exe
-          path: artifact/PickaxeCollector.exe
-          if-no-files-found: error
+- Local miner list encryption is **optional**. This build defaults to plaintext local config for reliability.
+- To encrypt the local miners list at rest, set an environment variable `PICKAXE_LOCAL_KEY` (32-byte key, base64 or hex).
+
+Example (PowerShell):
+
+```powershell
+# generate a random 32-byte key and set env var for this session
+python - <<'PY'
+import os,base64,secrets
+print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode().rstrip('='))
+PY
+$env:PICKAXE_LOCAL_KEY = "<paste key>"
+```
