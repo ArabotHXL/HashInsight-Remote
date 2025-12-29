@@ -1,9 +1,9 @@
-name: build-windows-exe
+name: Build PickaxeCollector Windows EXE
 
 on:
   workflow_dispatch:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
 
 jobs:
   build:
@@ -22,7 +22,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pyinstaller
+          pip install pyinstaller==6.17.0
+
+          # Hard-fail early if runtime deps are missing.
+          # This avoids producing an EXE that crashes at startup (e.g., missing uvicorn).
+          python -c "import uvicorn, fastapi, starlette; print('deps_ok')"
 
       - name: Build EXE (PyInstaller)
         shell: pwsh
@@ -32,16 +36,15 @@ jobs:
       - name: Verify dist output
         shell: pwsh
         run: |
-          if (!(Test-Path "dist\PickaxeCollector\PickaxeCollector.exe")) {
-            Write-Host "dist\PickaxeCollector\PickaxeCollector.exe not found"
-            Get-ChildItem -Recurse dist | Select-Object FullName
-            exit 1
+          if (!(Test-Path "dist/PickaxeCollector.exe")) {
+            Write-Host "dist tree:"
+            Get-ChildItem -Recurse dist | Format-List
+            throw "PickaxeCollector.exe not found at dist/PickaxeCollector.exe"
           }
-          Get-ChildItem dist\PickaxeCollector | Select-Object Name,Length
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PickaxeCollector-windows
-          path: dist/PickaxeCollector/**
+          name: PickaxeCollector-windows-exe
+          path: dist/PickaxeCollector.exe
           if-no-files-found: error
