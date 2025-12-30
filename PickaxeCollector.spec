@@ -1,58 +1,42 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
-
-from PyInstaller.building.datastruct import Tree
 from PyInstaller.utils.hooks import collect_submodules
 
 block_cipher = None
 
-# When PyInstaller executes a spec file, __file__ is not always defined.
-# SPECPATH is the reliable way to locate the spec directory.
-REPO_ROOT = Path(globals().get('SPECPATH', '.')).resolve()
+# NOTE:
+# GitHub Actions / PyInstaller may execute this spec in a context where __file__ is not defined.
+# Use SPECPATH (provided by PyInstaller) as the anchor for relative paths.
+ROOT = Path(SPECPATH).resolve().parent
 
-ENTRY = REPO_ROOT / 'collector_entry.py'
-if not ENTRY.exists():
-    # Fallback: some repos use pickaxe_app/__main__.py
-    alt = REPO_ROOT / 'pickaxe_app' / '__main__.py'
-    if alt.exists():
-        ENTRY = alt
-    else:
-        raise SystemExit(
-            f"Could not find entry script. Tried: {REPO_ROOT / 'collector_entry.py'} and {alt}"
-        )
-
-# ---------- Data files (web UI assets) ----------
-# IMPORTANT:
-# PyInstaller expects (SRC, DEST_DIR) where DEST_DIR is a *relative directory* inside the bundle.
-# Do NOT use absolute paths for DEST_DIR.
-
+# --- Web UI assets (pickaxe_app/web) ---
+# PyInstaller expects "datas" entries as 2-tuples: (SRC, DEST_DIR) where DEST_DIR is RELATIVE.
+# Avoid Tree() here to keep compatibility across PyInstaller versions.
 datas = []
-web_dir = REPO_ROOT / 'pickaxe_app' / 'web'
+web_dir = ROOT / "pickaxe_app" / "web"
 if web_dir.exists():
-    # Tree() will include the directory recursively.
-    # prefix must be relative; otherwise PyInstaller will error: "DEST_DIR must be a relative path".
-    datas.append(Tree(str(web_dir), prefix='pickaxe_app/web'))
+    for p in web_dir.rglob("*"):
+        if p.is_file():
+            rel = p.relative_to(web_dir)
+            dest_dir = str(Path("pickaxe_app") / "web" / rel.parent)
+            datas.append((str(p), dest_dir))
 
-# ---------- Hidden imports (FastAPI / Uvicorn) ----------
-# Uvicorn in particular relies on dynamic imports.
-hiddenimports = (
-    collect_submodules('fastapi')
-    + collect_submodules('starlette')
-    + collect_submodules('uvicorn')
-    + collect_submodules('uvicorn.loops')
-    + collect_submodules('uvicorn.protocols')
-    + collect_submodules('uvicorn.lifespan')
-)
+# --- Hidden imports (FastAPI/Uvicorn) ---
+hiddenimports = []
+hiddenimports += collect_submodules("uvicorn")
+hiddenimports += collect_submodules("fastapi")
+hiddenimports += collect_submodules("starlette")
+hiddenimports += collect_submodules("pydantic")
+hiddenimports += collect_submodules("pydantic_core")
 
 a = Analysis(
-    [str(ENTRY)],
-    pathex=[str(REPO_ROOT)],
+    ["collector_entry.py"],
+    pathex=[str(ROOT)],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
-    hooksconfig={},
     runtime_hooks=[],
     excludes=[],
     win_no_prefer_redirects=False,
@@ -67,17 +51,23 @@ exe = EXE(
     pyz,
     a.scripts,
     a.binaries,
+    a.zipfiles,
     a.datas,
     [],
-    name='PickaxeCollector',
+    name="PickaxeCollector",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
     console=True,
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=True,
+    name="PickaxeCollector",
 )
