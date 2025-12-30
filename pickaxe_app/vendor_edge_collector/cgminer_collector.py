@@ -17,7 +17,6 @@ import socket
 import json
 import gzip
 import time
-import random
 import logging
 import threading
 import queue
@@ -403,17 +402,12 @@ class OfflineCache:
 class CloudUploader:
     """云端数据上传器"""
     
-    def __init__(self, api_url: str, api_key: str, site_id: str, include_ip: bool = False, *, connect_timeout: float = 10.0, read_timeout: float = 120.0):
+    def __init__(self, api_url: str, api_key: str, site_id: str, include_ip: bool = False, *, connect_timeout: float = 5.0, read_timeout: float = 30.0):
         self.api_url = api_url.rstrip('/')
         self.api_key = api_key
         self.site_id = site_id
         self.include_ip = include_ip
         self.session = requests.Session()
-        # A small number of in-request retries improves resilience against transient
-        # slowdowns (cold starts, DB contention). Cached upload remains the main
-        # reliability mechanism.
-        self.http_retries = int(os.getenv("PICKAXE_UPLOAD_HTTP_RETRIES", "2"))
-        self.http_retry_base_sleep = float(os.getenv("PICKAXE_UPLOAD_HTTP_RETRY_BASE_SLEEP", "1.5"))
         self.session.headers.update({
             'X-Collector-Key': api_key,
             'X-Site-ID': site_id,
@@ -424,15 +418,7 @@ class CloudUploader:
         self.timeout = (float(connect_timeout), float(read_timeout))
     
     def upload(self, data: List[MinerData], *, mode: str = "raw") -> bool:
-        """上传矿机数据到云端。
-
-        设计目标：
-        - 不上传内网 IP（默认 include_ip=False）
-        - 对 429/5xx/超时做少量重试，减少偶发性超时造成的本地缓存堆积
-        """
-        if not self.api_url or not self.api_key:
-            return True
-
+        """上传矿机数据到云端"""
         try:
             rows = []
             for d in data:
@@ -441,70 +427,32 @@ class CloudUploader:
                 if not self.include_ip:
                     dd.pop("ip_address", None)
                 rows.append(dd)
-
             json_data = json.dumps(rows)
-            compressed = gzip.compress(json_data.encode("utf-8"))
-
+            compressed = gzip.compress(json_data.encode('utf-8'))
             # Optional hint for the cloud side (it can ignore this header if not implemented).
-            self.session.headers["X-Upload-Mode"] = mode
-
-            url = f"{self.api_url}/api/collector/upload"
-            retryable_status = {408, 429}
-
-            max_attempts = max(1, 1 + int(self.http_retries))
-            last_err: Optional[str] = None
-
-            for attempt in range(max_attempts):
-                if attempt > 0:
-                    # Exponential backoff with small jitter, capped.
-                    sleep_s = min(20.0, (1.6 ** attempt) + random.random())
-                    logger.warning(
-                        f"Retrying upload (attempt {attempt+1}/{max_attempts}) after {sleep_s:.1f}s; last_err={last_err}"
-                    )
-                    time.sleep(sleep_s)
-
-                try:
-                    t0 = time.monotonic()
-                    response = self.session.post(url, data=compressed, timeout=self.timeout)
-                    dt = time.monotonic() - t0
-
-                    # Happy path
-                    if response.status_code in (200, 202):
-                        try:
-                            result = response.json()
-                            if result.get("success", True):
-                                logger.info(
-                                    f"Uploaded {len(data)} miner records successfully (http={response.status_code}, {dt:.2f}s, bytes={len(compressed)})"
-                                )
-                                return True
-                            last_err = str(result.get("error") or "unknown cloud error")
-                        except Exception:
-                            # Some deployments may return empty/Non-JSON body on 202.
-                            logger.info(
-                                f"Uploaded {len(data)} miner records (http={response.status_code}, {dt:.2f}s, bytes={len(compressed)})"
-                            )
-                            return True
-
-                    # Non-2xx
-                    if response.status_code >= 500 or response.status_code in retryable_status:
-                        last_err = f"HTTP {response.status_code} ({dt:.2f}s)"
-                        continue
-
-                    # Non-retryable
-                    last_err = f"HTTP {response.status_code} ({dt:.2f}s)"
-                    logger.error(f"Upload HTTP error (non-retryable): {last_err}")
+            self.session.headers['X-Upload-Mode'] = mode
+            
+            response = self.session.post(
+                f"{self.api_url}/api/collector/upload",
+                data=compressed,
+                timeout=self.timeout
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get('success'):
+                    logger.info(f"Uploaded {len(data)} miner records successfully")
+                    return True
+                else:
+                    logger.error(f"Upload failed: {result.get('error')}")
                     return False
-
-                except requests.exceptions.Timeout as e:
-                    last_err = f"timeout {self.timeout}: {e}"
-                    continue
-                except requests.exceptions.ConnectionError as e:
-                    last_err = f"connection error: {e}"
-                    continue
-
-            logger.error(f"Upload failed after {max_attempts} attempt(s): {last_err}")
+            else:
+                logger.error(f"Upload HTTP error: {response.status_code}")
+                return False
+                
+        except requests.exceptions.ConnectionError:
+            logger.warning("Network unavailable, data will be cached")
             return False
-
         except Exception as e:
             logger.error(f"Upload error: {e}")
             return False

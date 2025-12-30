@@ -1,12 +1,14 @@
-name: Build Windows EXE
+name: Build PickaxeCollector Windows EXE
 
 on:
-  push:
-    branches: ["main"]
   workflow_dispatch:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
 
 jobs:
-  build:
+  build-windows-exe:
     runs-on: windows-latest
 
     steps:
@@ -17,42 +19,37 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
 
       - name: Install dependencies
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-
-          Write-Host "requirements.txt (first 30 lines)"
-          Get-Content requirements.txt -TotalCount 30
-
-          $reqText = (Get-Content requirements.txt -Raw).ToLower()
-          if ($reqText -match "@echo off") {
-            throw "requirements.txt contains batch content (@echo off). Restore requirements.txt to Python packages only."
-          }
-
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
-          python -m pip install python -m PyInstaller==6.7.0 python -m PyInstaller-hooks-contrib==2025.11
-
-          python -m pip check
-          python -c "import fastapi, uvicorn; print('deps-ok', fastapi.__version__, uvicorn.__version__)"
+          python -m pip install -U pip wheel
+          pip install -r requirements.txt
+          pip install -U pyinstaller
 
       - name: Build EXE (PyInstaller)
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-          python -m PyInstaller --clean --noconfirm PickaxeCollector.spec
+          pyinstaller --noconfirm PickaxeCollector.spec
 
-      - name: Verify dist output
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          if (!(Test-Path "dist/PickaxeCollector.exe")) { throw "dist/PickaxeCollector.exe not found" }
-          Get-Item "dist/PickaxeCollector.exe" | Format-List
+          if (Test-Path "dist\PickaxeCollector.exe") {
+            $exePath = "dist\PickaxeCollector.exe"
+          } elseif (Test-Path "dist\PickaxeCollector\PickaxeCollector.exe") {
+            $exePath = "dist\PickaxeCollector\PickaxeCollector.exe"
+          } else {
+            Write-Host "dist folder content:"
+            Get-ChildItem -Recurse dist | Format-List
+            throw "PickaxeCollector.exe not found in dist/"
+          }
+
+          New-Item -ItemType Directory -Force -Path artifact | Out-Null
+          Copy-Item $exePath -Destination artifact\PickaxeCollector.exe -Force
+          Write-Host "EXE packaged at artifact\PickaxeCollector.exe"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PickaxeCollector-windows
-          path: dist/PickaxeCollector.exe
+          name: PickaxeCollector-windows-exe
+          path: artifact/PickaxeCollector.exe
+          if-no-files-found: error

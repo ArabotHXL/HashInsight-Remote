@@ -27,11 +27,6 @@ DEFAULT_TIMEOUT_SEC = 5
 DEFAULT_CONNECT_TIMEOUT_SEC = 2
 DEFAULT_READ_TIMEOUT_SEC = 30
 
-# Cloud upload may take longer than miner I/O. Use more tolerant defaults here to avoid
-# local cache build-up when the server is slow (e.g., cold starts or DB contention).
-DEFAULT_UPLOAD_CONNECT_TIMEOUT_SEC = 10
-DEFAULT_UPLOAD_READ_TIMEOUT_SEC = 120
-
 DEFAULT_MAX_WORKERS = 50
 
 # Command channel (optional)
@@ -81,8 +76,8 @@ class AppConfig:
     # Upload tuning (edge -> cloud)
     # NOTE: connect_timeout_sec/read_timeout_sec are kept for backward compatibility
     # but the collector uses these upload_* fields.
-    upload_connect_timeout_sec: int = DEFAULT_UPLOAD_CONNECT_TIMEOUT_SEC
-    upload_read_timeout_sec: int = DEFAULT_UPLOAD_READ_TIMEOUT_SEC
+    upload_connect_timeout_sec: int = DEFAULT_CONNECT_TIMEOUT_SEC
+    upload_read_timeout_sec: int = DEFAULT_READ_TIMEOUT_SEC
     upload_workers: int = 4
     batch_size: int = 1000
     max_retries: int = 5
