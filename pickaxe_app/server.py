@@ -1,7 +1,6 @@
 import json
 import logging
 import os
-import sys
 import secrets
 import io
 import csv
@@ -214,38 +213,6 @@ def tail_file(path: Path, lines: int = 200) -> str:
         return ""
 
 
-def _resolve_web_dir() -> Path:
-    """Locate the web UI directory for both source and frozen (PyInstaller) runs."""
-
-    candidates: list[Path] = []
-
-    # 1) Source/dev mode (repo checkout)
-    here = Path(__file__).resolve().parent
-    candidates.append(here / "web")
-
-    # 2) PyInstaller onefile extraction directory
-    if getattr(sys, "frozen", False):
-        mei = Path(getattr(sys, "_MEIPASS", "")) if getattr(sys, "_MEIPASS", None) else None
-        if mei:
-            candidates.append(mei / "pickaxe_app" / "web")
-            candidates.append(mei / "web")
-
-        # 3) External web folder next to the executable (fallback)
-        try:
-            exe_dir = Path(sys.executable).resolve().parent
-            candidates.append(exe_dir / "web")
-            candidates.append(exe_dir / "pickaxe_app" / "web")
-        except Exception:
-            pass
-
-    for c in candidates:
-        if (c / "index.html").exists():
-            return c
-
-    # Default to source location (will error later with a clear message)
-    return candidates[0]
-
-
 def create_app() -> FastAPI:
     dd = _data_dir()
     log_file = setup_logging(_log_dir())
@@ -254,25 +221,15 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="HashInsight Pickaxe Collector", version=__version__)
 
-    web_dir = _resolve_web_dir()
+    web_dir = Path(__file__).parent / "web"
     static_dir = web_dir / "static"
+    static_dir.mkdir(parents=True, exist_ok=True)
     # Serve only static assets (JS/CSS) from /static
-    if static_dir.is_dir():
-        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-    else:
-        logger.warning("Web static directory not found: %s", static_dir)
+    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
-        index_path = web_dir / "index.html"
-        if not index_path.exists():
-            # Common cause: PyInstaller build missing datas for pickaxe_app/web.
-            raise RuntimeError(
-                "Embedded web UI not found. Expected index.html at: "
-                f"{index_path}. If running a packaged EXE, rebuild with pickaxe_app/web "
-                "included as PyInstaller datas, or place a 'web' folder next to the EXE."
-            )
-        return index_path.read_text(encoding="utf-8")
+        return (web_dir / "index.html").read_text(encoding="utf-8")
 
     # Backward-compatible asset route. Older UIs referenced /app.js directly.
     # The canonical path is now /static/app.js.

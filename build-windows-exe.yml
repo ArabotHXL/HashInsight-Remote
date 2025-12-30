@@ -25,13 +25,14 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install -U pip wheel
-          pip install -r requirements.txt
-          pip install -U pyinstaller
+          python -m pip install -r requirements.txt
+          # Install PyInstaller explicitly; we'll invoke it via python -m to avoid PATH issues
+          python -m pip install -U pyinstaller
 
       - name: Build EXE (PyInstaller)
         shell: pwsh
         run: |
-          pyinstaller --noconfirm PickaxeCollector.spec
+          python -m PyInstaller --noconfirm PickaxeCollector.spec
 
           if (Test-Path "dist\PickaxeCollector.exe") {
             $exePath = "dist\PickaxeCollector.exe"
