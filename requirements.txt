@@ -1,6 +1,9 @@
-fastapi>=0.110
-uvicorn[standard]>=0.27
-requests>=2.31
-openpyxl>=3.1
+# Runtime dependencies for Pickaxe/Edge Collector (keep this file Python-only; no .bat/.ps1 lines)
+fastapi>=0.111.0
+uvicorn>=0.30.1
 python-multipart>=0.0.9
-cryptography>=41.0
+requests>=2.31.0
+pydantic>=2.7.0
+pydantic-settings>=2.2.1
+python-dotenv>=1.0.1
+psutil>=5.9.8
