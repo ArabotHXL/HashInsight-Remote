@@ -112,3 +112,10 @@ nohup python cgminer_collector.py > collector.log 2>&1 &
 ## 联系支持
 
 如有问题，请提交工单或联系技术支持。
+
+
+### Remote control notes
+
+- Enable commands with `enable_commands: true`.
+- Commands are executed **by miner_id**; cloud `ip_address` fields (if any) are ignored.
+- A stable `device_id` is generated at `cache_dir/device_id`.

@@ -24,8 +24,9 @@ import os
 import sqlite3
 import hashlib
 import requests
+import uuid
 from .ip_scanner import IPRangeParser, IPRangeError
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, asdict
@@ -328,6 +329,20 @@ class OfflineCache:
                 retry_count INTEGER DEFAULT 0
             )
         ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS executed_commands (
+                command_id TEXT PRIMARY KEY,
+                site_id TEXT,
+                miner_id TEXT,
+                command TEXT,
+                status TEXT,
+                result_code INTEGER,
+                message TEXT,
+                executed_at TEXT
+            )
+        ''')
+
         conn.commit()
         conn.close()
     
@@ -399,6 +414,49 @@ class OfflineCache:
             conn.close()
 
 
+
+    # -------------------------
+    # Command idempotency cache
+    # -------------------------
+    def is_command_executed(self, command_id: str) -> bool:
+        """Return True if command_id has already been executed (or skipped/rejected)."""
+        if not command_id:
+            return False
+        conn = sqlite3.connect(str(self.db_path))
+        cursor = conn.cursor()
+        try:
+            cursor.execute('SELECT 1 FROM executed_commands WHERE command_id = ? LIMIT 1', (str(command_id),))
+            return cursor.fetchone() is not None
+        finally:
+            conn.close()
+
+    def mark_command_executed(
+        self,
+        command_id: str,
+        site_id: str,
+        miner_id: str,
+        command: str,
+        status: str,
+        result_code: int,
+        message: str,
+        executed_at: str,
+    ) -> None:
+        """Persist execution record for a command_id to ensure idempotency."""
+        if not command_id:
+            return
+        conn = sqlite3.connect(str(self.db_path))
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                'INSERT OR REPLACE INTO executed_commands (command_id, site_id, miner_id, command, status, result_code, message, executed_at) '
+                'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                (str(command_id), str(site_id), str(miner_id), str(command), str(status), int(result_code), str(message), str(executed_at)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
 class CloudUploader:
     """云端数据上传器"""
     
@@ -461,17 +519,32 @@ class CloudUploader:
 class CommandExecutor:
     """命令执行器 - 从云端获取并执行控制命令"""
     
-    def __init__(self, api_url: str, api_key: str, site_id: str, miner_map: Dict[str, Dict]):
+    def __init__(
+        self,
+        api_url: str,
+        api_key: str,
+        site_id: str,
+        miner_map: Dict[str, Dict],
+        offline_cache: Optional['OfflineCache'] = None,
+        device_id: Optional[str] = None,
+        enforce_site_id: bool = True,
+    ):
         self.api_url = api_url.rstrip('/')
         self.api_key = api_key
         self.site_id = site_id
         self.miner_map = miner_map
+        self.offline_cache = offline_cache
+        self.device_id = device_id
+        self.enforce_site_id = enforce_site_id
         self.session = requests.Session()
         self.session.headers.update({
             'X-Collector-Key': api_key,
             'X-Site-ID': site_id,
             'Content-Type': 'application/json'
         })
+        if self.device_id:
+            self.session.headers['X-Device-ID'] = str(self.device_id)
+
         
         self.stats = {
             'commands_fetched': 0,
@@ -509,74 +582,209 @@ class CommandExecutor:
             logger.error(f"Fetch commands error: {e}")
             return []
     
-    def report_result(self, command_id: int, success: bool, message: str):
-        """报告命令执行结果"""
-        try:
-            response = self.session.post(
-                f"{self.api_url}/api/collector/commands/{command_id}/result",
-                json={
-                    'status': 'completed' if success else 'failed',
-                    'result_code': 0 if success else 1,
-                    'result_message': message
-                },
-                timeout=10
-            )
-            
-            if response.status_code == 200:
-                logger.debug(f"Command {command_id} result reported: {success}")
-            else:
-                logger.warning(f"Report result failed: HTTP {response.status_code}")
-                
-        except Exception as e:
-            logger.error(f"Report result error: {e}")
-    
-    def execute_command(self, cmd: Dict) -> Tuple[bool, str]:
-        """执行单个命令"""
-        command_id = cmd.get('command_id')
-        miner_id = cmd.get('miner_id')
-        ip_address = cmd.get('ip_address')
-        command_type = cmd.get('command')
-        params = cmd.get('params', {})
-        
-        if not ip_address and miner_id in self.miner_map:
-            ip_address = self.miner_map[miner_id].get('ip')
-        
-        if not ip_address:
-            return False, f"Cannot find IP for miner {miner_id}"
-        
-        logger.info(f"Executing command {command_id}: {command_type} on {miner_id} ({ip_address})")
-        
-        port = self.miner_map.get(miner_id, {}).get('port', 4028)
-        api = CGMinerAPI(ip_address, port)
-        
-        success, message = api.execute_control_command(command_type, params)
-        
-        if success:
-            self.stats['commands_executed'] += 1
-            logger.info(f"Command {command_id} succeeded: {message}")
-        else:
-            self.stats['commands_failed'] += 1
-            logger.error(f"Command {command_id} failed: {message}")
-        
-        return success, message
-    
-    def process_commands(self) -> int:
-        """处理所有待执行命令"""
-        commands = self.fetch_pending_commands()
-        
-        if not commands:
-            return 0
-        
-        for cmd in commands:
-            command_id = cmd.get('command_id')
+    def report_result(
+            self,
+            command_id: Any,
+            status: str,
+            result_code: int,
+            message: str,
+            miner_id: Optional[str] = None,
+            command: Optional[str] = None,
+            duration_ms: Optional[int] = None,
+        ):
+            """Report command execution result back to cloud.
+
+            Extra metadata fields are included for audit/diagnostics; the cloud may ignore unknown fields.
+            """
             try:
-                success, message = self.execute_command(cmd)
-                self.report_result(command_id, success, message)
+                payload = {
+                    'status': status,
+                    'result_code': int(result_code),
+                    'result_message': message,
+                    'site_id': self.site_id,
+                }
+                if miner_id:
+                    payload['miner_id'] = str(miner_id)
+                if command:
+                    payload['command'] = str(command)
+                if self.device_id:
+                    payload['device_id'] = str(self.device_id)
+                payload['executed_at'] = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+                if duration_ms is not None:
+                    payload['duration_ms'] = int(duration_ms)
+
+                response = self.session.post(
+                    f"{self.api_url}/api/collector/commands/{command_id}/result",
+                    json=payload,
+                    timeout=10
+                )
+
+                if response.status_code == 200:
+                    logger.debug(f"Command {command_id} result reported: {status}/{result_code}")
+                else:
+                    logger.warning(f"Report result failed: HTTP {response.status_code}")
+
             except Exception as e:
-                logger.error(f"Command {command_id} execution error: {e}")
-                self.report_result(command_id, False, str(e))
-        
-        return len(commands)
+                logger.error(f"Report result error: {e}")
+
+    def execute_command(self, cmd: Dict) -> Tuple[str, int, str, int]:
+            """Execute a single command.
+
+            Security model:
+            - The cloud is NEVER trusted to provide miner IPs. We only accept miner_id and resolve
+              to ip:port using the local miner_map (whitelist).
+            - Optionally enforce cmd.site_id == self.site_id.
+            - Idempotency is enforced via OfflineCache.executed_commands when available.
+            """
+            command_id = cmd.get('command_id')
+            miner_id = str(cmd.get('miner_id') or '').strip()
+            command_type = str(cmd.get('command') or '').strip()
+            params = cmd.get('params') or {}
+            cmd_site_id = cmd.get('site_id')
+
+            # Enforce site isolation (defense-in-depth; poll endpoint should already be site-scoped)
+            if self.enforce_site_id and cmd_site_id and str(cmd_site_id) != str(self.site_id):
+                status, code, message = 'rejected', 3, f"SITE_MISMATCH: cmd.site_id={cmd_site_id} expected={self.site_id}"
+                if self.offline_cache and command_id:
+                    self.offline_cache.mark_command_executed(
+                        str(command_id), str(self.site_id), miner_id, command_type, status, code, message,
+                        datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+                    )
+                return status, code, message, 0
+
+            # TTL / expiration checks (best-effort; cloud should still cancel/expire commands server-side)
+            def _parse_iso(ts: Any) -> Optional[datetime]:
+                if not ts:
+                    return None
+                try:
+                    s = str(ts).strip()
+                    if not s:
+                        return None
+                    # Accept trailing Z
+                    if s.endswith('Z'):
+                        s = s[:-1] + '+00:00'
+                    dt = datetime.fromisoformat(s)
+                    if dt.tzinfo is not None:
+                        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+                    return dt
+                except Exception:
+                    return None
+
+            now_utc = datetime.utcnow()
+            expires_at = _parse_iso(cmd.get('expires_at'))
+            if not expires_at:
+                ttl_sec = cmd.get('ttl_sec') or cmd.get('ttl_seconds')
+                issued_at = _parse_iso(cmd.get('issued_at'))
+                if ttl_sec and issued_at:
+                    try:
+                        expires_at = issued_at + timedelta(seconds=int(ttl_sec))
+                    except Exception:
+                        expires_at = None
+
+            if expires_at and expires_at <= now_utc:
+                status, code, message = 'rejected', 3, 'COMMAND_EXPIRED'
+                if self.offline_cache and command_id:
+                    self.offline_cache.mark_command_executed(
+                        str(command_id), str(self.site_id), miner_id, command_type, status, code, message,
+                        now_utc.replace(microsecond=0).isoformat() + 'Z'
+                    )
+                return status, code, message, 0
+
+            # Idempotency / de-duplication
+            if self.offline_cache and command_id and self.offline_cache.is_command_executed(str(command_id)):
+                return 'skipped', 2, 'DUPLICATE_IGNORED', 0
+
+            if not miner_id:
+                status, code, message = 'failed', 1, 'MISSING_MINER_ID'
+                if self.offline_cache and command_id:
+                    self.offline_cache.mark_command_executed(
+                        str(command_id), str(self.site_id), miner_id, command_type, status, code, message,
+                        now_utc.replace(microsecond=0).isoformat() + 'Z'
+                    )
+                return status, code, message, 0
+
+            miner = self.miner_map.get(miner_id)
+            if not miner:
+                status, code, message = 'failed', 1, f"MINER_NOT_REGISTERED_ON_EDGE: {miner_id}"
+                if self.offline_cache and command_id:
+                    self.offline_cache.mark_command_executed(
+                        str(command_id), str(self.site_id), miner_id, command_type, status, code, message,
+                        now_utc.replace(microsecond=0).isoformat() + 'Z'
+                    )
+                return status, code, message, 0
+
+            ip_address = miner.get('ip')
+            port = int(miner.get('port', 4028) or 4028)
+
+            if not ip_address:
+                status, code, message = 'failed', 1, f"NO_IP_FOR_MINER_ID: {miner_id}"
+                if self.offline_cache and command_id:
+                    self.offline_cache.mark_command_executed(
+                        str(command_id), str(self.site_id), miner_id, command_type, status, code, message,
+                        now_utc.replace(microsecond=0).isoformat() + 'Z'
+                    )
+                return status, code, message, 0
+
+            logger.info(f"Executing command {command_id}: {command_type} on {miner_id} ({ip_address}:{port})")
+
+            t0 = time.time()
+            api = CGMinerAPI(ip_address, port)
+            success, message = api.execute_control_command(command_type, params)
+            duration_ms = int((time.time() - t0) * 1000)
+
+            if success:
+                self.stats['commands_executed'] += 1
+                status, code = 'completed', 0
+                logger.info(f"Command {command_id} succeeded: {message}")
+            else:
+                self.stats['commands_failed'] += 1
+                status, code = 'failed', 1
+                logger.warning(f"Command {command_id} failed: {message}")
+
+            if self.offline_cache and command_id:
+                self.offline_cache.mark_command_executed(
+                    str(command_id), str(self.site_id), miner_id, command_type, status, code, message,
+                    datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+                )
+
+            return status, code, message, duration_ms
+
+    def process_commands(self) -> int:
+            """Process pending control commands."""
+            commands = self.fetch_pending_commands()
+
+            if not commands:
+                return 0
+
+            for cmd in commands:
+                command_id = cmd.get('command_id')
+                miner_id = cmd.get('miner_id')
+                command_type = cmd.get('command')
+
+                try:
+                    status, code, message, duration_ms = self.execute_command(cmd)
+                    self.report_result(
+                        command_id,
+                        status=status,
+                        result_code=code,
+                        message=message,
+                        miner_id=miner_id,
+                        command=command_type,
+                        duration_ms=duration_ms,
+                    )
+                except Exception as e:
+                    logger.error(f"Command {command_id} execution error: {e}")
+                    self.report_result(
+                        command_id,
+                        status='failed',
+                        result_code=1,
+                        message=str(e),
+                        miner_id=miner_id,
+                        command=command_type,
+                        duration_ms=0,
+                    )
+
+            return len(commands)
 
 
 class EdgeCollector:
@@ -723,6 +931,19 @@ class EdgeCollector:
         
         self.cache = OfflineCache(config.get('cache_dir', './cache'))
 
+        # Stable edge device identity for audit/claim. Persist in cache_dir/device_id
+        self.device_id = str(config.get('device_id') or '').strip()
+        if not self.device_id:
+            try:
+                did_path = Path(config.get('cache_dir', './cache')) / 'device_id'
+                if did_path.exists():
+                    self.device_id = did_path.read_text(encoding='utf-8').strip()
+                if not self.device_id:
+                    self.device_id = str(uuid.uuid4())
+                    did_path.write_text(self.device_id, encoding='utf-8')
+            except Exception:
+                self.device_id = str(uuid.uuid4())
+
         self.uploader = CloudUploader(
             self.api_url,
             self.api_key,
@@ -745,7 +966,13 @@ class EdgeCollector:
         
         self.miner_map = {m.get('id', m.get('ip')): m for m in self.miners}
         self.command_executor = CommandExecutor(
-            self.api_url, self.api_key, self.site_id, self.miner_map
+            self.api_url,
+            self.api_key,
+            self.site_id,
+            self.miner_map,
+            offline_cache=self.cache,
+            device_id=self.device_id,
+            enforce_site_id=bool(config.get('enforce_site_id_in_commands', True)),
         )
         
         self.running = False

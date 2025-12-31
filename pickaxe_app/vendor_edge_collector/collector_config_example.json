@@ -1,22 +1,24 @@
 {
-    "api_url": "https://calc.hashinsight.net/api/collector/upload",
-    "api_key": "YOUR_API_KEY_HERE",
-    "site_id": "site_001",
-    "collection_interval": 60,
-    "max_workers": 50,
-    "timeout": 5,
-    "retry_count": 3,
-    "cache_enabled": true,
-    "miners": [],
-    "ip_ranges": [
-        {
-            "range": "192.168.1.1-192.168.1.254",
-            "prefix": "MINER_",
-            "type": "antminer"
-        }
-    ],
-    "notes": {
-        "zh": "请将 api_key 替换为从平台获取的真实密钥，ip_ranges 改为你矿场的实际IP范围",
-        "en": "Replace api_key with your real key from the platform, and ip_ranges with your farm's actual IP range"
+  "api_url": "https://calc.hashinsight.net/api/collector/upload",
+  "api_key": "YOUR_API_KEY_HERE",
+  "site_id": "site_001",
+  "collection_interval": 60,
+  "max_workers": 50,
+  "timeout": 5,
+  "retry_count": 3,
+  "cache_enabled": true,
+  "miners": [],
+  "ip_ranges": [
+    {
+      "range": "192.168.1.1-192.168.1.254",
+      "prefix": "MINER_",
+      "type": "antminer"
     }
+  ],
+  "notes": {
+    "zh": "请将 api_key 替换为从平台获取的真实密钥，ip_ranges 改为你矿场的实际IP范围；命令执行只接受 miner_id 定位，本地白名单解析IP，忽略云端 ip_address；Collector 会在 cache_dir/device_id 生成 device_id 并随结果回传",
+    "en": "Replace api_key with your real key from the platform, and ip_ranges with your farm's actual IP range; Commands use miner_id only (local whitelist resolves IP), cloud ip_address is ignored; Collector generates device_id under cache_dir/device_id and reports it with results"
+  },
+  "enable_commands": true,
+  "enforce_site_id_in_commands": true
 }

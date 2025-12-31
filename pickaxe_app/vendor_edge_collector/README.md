@@ -240,3 +240,11 @@ iptables -L -n | grep 4028
 
 版本: 1.0.0  
 更新: 2024-11
+
+
+## Remote Control Security Model
+
+- The collector **does not trust cloud-provided IP addresses**. Control commands must target a `miner_id`.
+- The collector resolves `miner_id -> ip:port` from the **local miner_map whitelist** (generated from `miners` or `ip_ranges`).
+- If `cmd.site_id` is provided, the collector enforces `cmd.site_id == collector.site_id` (config: `enforce_site_id_in_commands`).
+- The collector generates a stable `device_id` in `cache_dir/device_id` and includes it in command result callbacks for audit.
