@@ -184,7 +184,7 @@ def _normalize_miner_rows(rows: List[List[str]], defaults: Dict[str, Any]) -> Li
 
     return out
 
-logger = logging.getLogger("PickaxeLocalAPI")
+logger = logging.getLogger("HashInsightRemoteLocalAPI")
 
 
 def _data_dir() -> Path:
@@ -219,7 +219,7 @@ def create_app() -> FastAPI:
 
     runner = CollectorRunner(dd)
 
-    app = FastAPI(title="HashInsight Pickaxe Collector", version=__version__)
+    app = FastAPI(title="HashInsight Remote", version=__version__)
 
     web_dir = Path(__file__).parent / "web"
     static_dir = web_dir / "static"
@@ -280,7 +280,7 @@ def create_app() -> FastAPI:
     @app.get("/api/version")
     def version() -> Dict[str, Any]:
         return {
-            "app": "HashInsight Pickaxe Collector",
+            "app": "HashInsight Remote",
             "version": __version__,
             "config_path": str(get_config_path(None)),
             "log_file": str(log_file),

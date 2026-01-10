@@ -1,6 +1,6 @@
 """Minimal Flask ingest endpoint for HashInsight collectors.
 
-Drop this into your cloud Flask app (server-side) to accept uploads from the Pickaxe/Edge Collector.
+Drop this into your cloud Flask app (server-side) to accept uploads from the HashInsight Remote/HashInsight Remote.
 
 Contract:
 - POST /api/collector/upload

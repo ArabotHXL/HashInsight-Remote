@@ -12,5 +12,5 @@ echo "Installing/updating dependencies..."
 python -m pip install --upgrade pip >/dev/null 2>&1 || true
 pip install -r requirements.txt
 
-echo "Starting Pickaxe UI on http://127.0.0.1:8711"
+echo "Starting HashInsight Remote UI on http://127.0.0.1:8711"
 python -m pickaxe_app.main

@@ -1,4 +1,4 @@
-# HashInsight Pickaxe Collector (MVP)
+# HashInsight Remote — End-to-End
 
 This project is a **local collector app** (runs on a laptop/PC inside the mining farm LAN) that:
 1) connects to miners by IP (CGMiner-compatible API on port `4028`),
@@ -48,7 +48,7 @@ In the browser:
    - **Batch Size**: upload chunk size per request (smaller = less server latency; larger = fewer requests)
    - **Upload Read Timeout (sec)**: how long we wait for the cloud to respond (increase if batches are large)
    - **Latest Max Miners**: for large sites, “latest” polls a rolling window to keep site-level freshness
-   - **Shard Total / Shard Index**: run multiple Pickaxe instances, each handling a subset of miners
+   - **Shard Total / Shard Index**: run multiple HashInsight Remote instances, each handling a subset of miners
 5. Add miners:
    - Miner ID (optional but recommended): `S21_0001`
    - IP: `192.168.1.100`
@@ -78,11 +78,11 @@ See: `docs/cloud_ingest_flask_blueprint.py`
 ## 5) Build a standalone desktop app (optional)
 See: `docs/BUILD.md`
 
-## Edge Collector configuration notes
+## HashInsight Remote configuration notes
 
 ### Inventory sources
 
-Edge Collector supports multiple inventory inputs. Use `inventory_sources` to choose which sources are enabled and how they are merged:
+HashInsight Remote supports multiple inventory inputs. Use `inventory_sources` to choose which sources are enabled and how they are merged:
 
 - `miners`: static miner list from `collector_config.json` (useful for small, fixed fleets)
 - `binding`: local binding store (CSV/SQLite) that maps **miner_id → local IP/port** plus optional local credentials

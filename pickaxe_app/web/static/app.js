@@ -1,4 +1,4 @@
-// Pickaxe Collector UI
+// HashInsight Remote UI
 // Keep UI resilient to config schema changes.
 
 let LOADED_CONFIG = null;

@@ -1,5 +1,5 @@
 """
-HashInsight Edge Collector - CGMiner TCP客户端
+HashInsight HashInsight Remote - CGMiner TCP客户端
 CGMiner TCP Client with Retry Mechanism
 
 支持:

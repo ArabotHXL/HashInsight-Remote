@@ -33,7 +33,7 @@ DEFAULT_MAX_WORKERS = 50
 DEFAULT_ENABLE_COMMANDS = False
 DEFAULT_COMMAND_POLL_INTERVAL_SEC = 5
 
-# Sharding (for 5k-10k miners): split miner list across multiple Pickaxe instances
+# Sharding (for 5k-10k miners): split miner list across multiple HashInsight Remote instances
 DEFAULT_SHARD_TOTAL = 1
 DEFAULT_SHARD_INDEX = 0
 

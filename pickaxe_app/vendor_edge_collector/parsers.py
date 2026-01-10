@@ -1,5 +1,5 @@
 """
-HashInsight Edge Collector - CGMiner数据解析器
+HashInsight HashInsight Remote - CGMiner数据解析器
 CGMiner Data Parsers for Board-Level Health
 
 支持多种矿机型号:

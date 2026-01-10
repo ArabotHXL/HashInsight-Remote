@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-HashInsight Edge Collector - 矿场边缘数据采集器
+HashInsight HashInsight Remote - 矿场边缘数据采集器
 Mining Farm Edge Data Collector
 
 功能:
@@ -1698,7 +1698,7 @@ class EdgeCollector:
         self.command_poll_interval = config.get('command_poll_interval', 5)
         self.max_workers = config.get('max_workers', 50)
 
-        # Miner connection behavior (plumbed from Pickaxe UI)
+        # Miner connection behavior (plumbed from HashInsight Remote UI)
         # Use separate timeouts for latest vs raw to avoid long tail blocks.
         self.miner_timeout_fast = float(config.get('miner_timeout_fast', config.get('miner_timeout', 5.0)))
         self.miner_timeout_slow = float(config.get('miner_timeout_slow', config.get('miner_timeout', 5.0)))
@@ -2207,7 +2207,7 @@ class EdgeCollector:
     def run(self):
         """持续运行采集循环"""
         self.running = True
-        logger.info(f"Edge Collector started. Site: {self.site_id}, Miners: {len(self.miners)}")
+        logger.info(f"HashInsight Remote started. Site: {self.site_id}, Miners: {len(self.miners)}")
         logger.info(f"Collection interval: {self.collection_interval}s, Workers: {self.max_workers}")
         
         if self.enable_commands:
@@ -2331,7 +2331,7 @@ def create_sample_config(output_path: str = "collector_config.json"):
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description='HashInsight Edge Collector')
+    parser = argparse.ArgumentParser(description='HashInsight HashInsight Remote')
     parser.add_argument('-c', '--config', default='collector_config.json', help='Config file path')
     parser.add_argument('--init', action='store_true', help='Create sample config file')
     parser.add_argument('--test', help='Test connection to a single miner IP')

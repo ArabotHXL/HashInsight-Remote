@@ -1,6 +1,6 @@
 # Remote Control Hardening (miner_id + site_id)
 
-This build hardens remote control execution for HashInsight Edge Collector.
+This build hardens remote control execution for HashInsight HashInsight Remote.
 
 ## Key changes
 - Commands are executed **by miner_id only**. Cloud-provided `ip_address` fields are ignored.
@@ -31,6 +31,6 @@ Result payload includes:
 - result_message
 - site_id, miner_id, device_id, executed_at, duration_ms, command
 
-Note: HTTP-based miner protocols (e.g., Whatsminer HTTP telemetry) are telemetry-only. Edge Collector rejects remote control commands for protocol=http/https/whatsminer_http with `CONTROL_NOT_SUPPORTED_OVER_HTTP`.
+Note: HTTP-based miner protocols (e.g., Whatsminer HTTP telemetry) are telemetry-only. HashInsight Remote rejects remote control commands for protocol=http/https/whatsminer_http with `CONTROL_NOT_SUPPORTED_OVER_HTTP`.
 Note: Miner IP addresses are edge-local only and never uploaded to the cloud. `upload_include_ip` is ignored by design.
 

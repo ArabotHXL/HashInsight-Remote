@@ -1,4 +1,4 @@
-# HashInsight Pickaxe Collector (v0.3.8)
+# HashInsight Remote (Edge Agent)
 
 A lightweight local collector app for mining farms:
 - Connect to miners by IP (CGMiner API, default port 4028)
@@ -17,7 +17,7 @@ See `docs/README_END_TO_END.md`.
 
 ## Security (IP handling)
 
-- By default, Pickaxe keeps miner IPs **local** and does **not** upload them to the cloud.
+- By default, HashInsight Remote keeps miner IPs **local** and does **not** upload them to the cloud.
 
 ## Security (local config encryption)
 
@@ -54,4 +54,4 @@ $env:PICKAXE_LOCAL_KEY = "<paste key>"
 - `command_api_mode = auto` (try v1 first, fall back to legacy)
 
 ### Security note
-By default the collector **does not upload internal miner IPs** to the cloud. Miner IPs stay on the edge device only (Pickaxe UI/config).
+By default the collector **does not upload internal miner IPs** to the cloud. Miner IPs stay on the edge device only (HashInsight Remote UI/config).

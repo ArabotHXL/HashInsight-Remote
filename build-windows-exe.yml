@@ -1,4 +1,4 @@
-name: Build PickaxeCollector Windows EXE
+name: Build HashInsight RemoteCollector Windows EXE
 
 on:
   workflow_dispatch:
@@ -32,25 +32,25 @@ jobs:
       - name: Build EXE (PyInstaller)
         shell: pwsh
         run: |
-          python -m PyInstaller --noconfirm PickaxeCollector.spec
+          python -m PyInstaller --noconfirm HashInsight RemoteCollector.spec
 
-          if (Test-Path "dist\PickaxeCollector.exe") {
-            $exePath = "dist\PickaxeCollector.exe"
-          } elseif (Test-Path "dist\PickaxeCollector\PickaxeCollector.exe") {
-            $exePath = "dist\PickaxeCollector\PickaxeCollector.exe"
+          if (Test-Path "dist\HashInsight RemoteCollector.exe") {
+            $exePath = "dist\HashInsight RemoteCollector.exe"
+          } elseif (Test-Path "dist\HashInsight RemoteCollector\HashInsight RemoteCollector.exe") {
+            $exePath = "dist\HashInsight RemoteCollector\HashInsight RemoteCollector.exe"
           } else {
             Write-Host "dist folder content:"
             Get-ChildItem -Recurse dist | Format-List
-            throw "PickaxeCollector.exe not found in dist/"
+            throw "HashInsight RemoteCollector.exe not found in dist/"
           }
 
           New-Item -ItemType Directory -Force -Path artifact | Out-Null
-          Copy-Item $exePath -Destination artifact\PickaxeCollector.exe -Force
-          Write-Host "EXE packaged at artifact\PickaxeCollector.exe"
+          Copy-Item $exePath -Destination artifact\HashInsight RemoteCollector.exe -Force
+          Write-Host "EXE packaged at artifact\HashInsight RemoteCollector.exe"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PickaxeCollector-windows-exe
-          path: artifact/PickaxeCollector.exe
+          name: HashInsight RemoteCollector-windows-exe
+          path: artifact/HashInsight RemoteCollector.exe
           if-no-files-found: error

@@ -1,5 +1,5 @@
 """
-HashInsight Edge Collector - 数据模型
+HashInsight HashInsight Remote - 数据模型
 Data Models for Mining Farm Telemetry
 
 Board-level health tracking with dynamic chip detection

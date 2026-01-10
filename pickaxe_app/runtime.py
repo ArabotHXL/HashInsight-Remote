@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional
 from .config import AppConfig
 from .vendor_edge_collector.cgminer_collector import EdgeCollector
 
-logger = logging.getLogger("PickaxeRunner")
+logger = logging.getLogger("HashInsightRemoteRunner")
 
 
 def build_edge_config(cfg: AppConfig, data_dir: Path) -> Dict[str, Any]:

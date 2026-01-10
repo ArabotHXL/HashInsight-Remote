@@ -1,4 +1,4 @@
-"""Logging helpers for Pickaxe Collector.
+"""Logging helpers for HashInsight Remote.
 
 This module is intentionally conservative:
 - Avoids duplicate handlers (common when uvicorn reloads).

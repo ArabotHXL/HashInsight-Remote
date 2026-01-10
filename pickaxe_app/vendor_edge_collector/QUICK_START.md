@@ -1,4 +1,4 @@
-# Edge Collector 快速启动指南
+# HashInsight Remote 快速启动指南
 
 ## 5分钟快速部署
 
@@ -17,7 +17,7 @@ pip install requests
 ### 第3步：获取API密钥
 
 1. 登录 HashInsight 平台
-2. 进入 **托管管理 → 站点运营 → Edge Collectors**
+2. 进入 **托管管理 → 站点运营 → HashInsight Remotes**
 3. 点击 **"生成密钥"**
 4. 选择你的矿场站点
 5. **立即复制密钥**（只显示一次！）

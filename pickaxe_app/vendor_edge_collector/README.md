@@ -1,8 +1,8 @@
-# HashInsight Edge Collector - 矿场边缘数据采集器
+# HashInsight HashInsight Remote - 矿场边缘数据采集器
 
 ## 概述
 
-Edge Collector 是一个部署在矿场本地的数据采集程序，通过 CGMiner API (端口4028) 实时采集矿机运行数据，并上传到 HashInsight 云端平台。
+HashInsight Remote 是一个部署在矿场本地的数据采集程序，通过 CGMiner API (端口4028) 实时采集矿机运行数据，并上传到 HashInsight 云端平台。
 
 ## 系统架构
 
@@ -14,7 +14,7 @@ Edge Collector 是一个部署在矿场本地的数据采集程序，通过 CGMi
 │        │            │              │        │            │
 │        ▼            │   HTTPS      │        ▼            │
 │  ┌─────────────┐    │  ────────>   │  ┌─────────────┐    │
-│  │Edge Collector│   │              │  │ PostgreSQL  │    │
+│  │HashInsight Remote│   │              │  │ PostgreSQL  │    │
 │  │ (本程序)     │   │              │  │ + Redis     │    │
 │  └─────────────┘    │              │  └─────────────┘    │
 └─────────────────────┘              └─────────────────────┘
@@ -142,7 +142,7 @@ sudo systemctl start hashinsight-collector
 
 ```ini
 [Unit]
-Description=HashInsight Edge Collector
+Description=HashInsight HashInsight Remote
 After=network.target
 
 [Service]

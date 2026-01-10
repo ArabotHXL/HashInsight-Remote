@@ -15,11 +15,11 @@ If you want a single executable for on-site operators, use PyInstaller.
    ```
 3. Build:
    ```bat
-   pyinstaller --name HashInsightPickaxe --onefile --noconsole \
+   pyinstaller --name HashInsightHashInsight Remote --onefile --noconsole \
      --add-data "pickaxe_app\web;pickaxe_app\web" \
      -m pickaxe_app.main
    ```
-4. The output binary will be in `dist\HashInsightPickaxe.exe`.
+4. The output binary will be in `dist\HashInsightHashInsight Remote.exe`.
 
 ## macOS/Linux build
 Same idea, but the output binary will be for your current OS:
@@ -28,7 +28,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 pip install pyinstaller
-pyinstaller --name HashInsightPickaxe --onefile \
+pyinstaller --name HashInsightHashInsight Remote --onefile \
   --add-data "pickaxe_app/web:pickaxe_app/web" \
   -m pickaxe_app.main
 ```
@@ -36,5 +36,5 @@ pyinstaller --name HashInsightPickaxe --onefile \
 ## Notes
 - You cannot cross-compile Windows EXE from Linux reliably; build on the target OS.
 - Config is stored under:
-  - Windows: `C:\ProgramData\HashInsightPickaxe\config.json`
+  - Windows: `C:\ProgramData\HashInsightHashInsight Remote\config.json`
   - Others: `~/.hashinsight_pickaxe/config.json`
