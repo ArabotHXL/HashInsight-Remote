@@ -374,6 +374,15 @@ function writeFormConfig(cfg){
   setVal("site_name", c.site_name ?? "");
   setVal("cloud_api_base", c.cloud_api_base ?? "");
   setVal("collector_token", c.collector_token ?? "");
+  // Optional cloud binding / API modes
+  setVal("zone_id", c.zone_id ?? "");
+  setVal("device_id", c.device_id ?? "");
+  setVal("telemetry_api_mode", c.telemetry_api_mode ?? "legacy");
+  setVal("command_api_mode", c.command_api_mode ?? "auto");
+  setBoolSelect("enable_commands", c.enable_commands ?? false);
+  setVal("command_poll_interval_sec", c.command_poll_interval_sec ?? 5);
+  setBoolSelect("ack_include_snapshot", c.ack_include_snapshot ?? true);
+
 
   // Intervals
   setVal("latest_interval_sec", c.latest_interval_sec ?? 10);

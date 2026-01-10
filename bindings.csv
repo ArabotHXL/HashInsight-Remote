@@ -1,0 +1,2 @@
+asset_id,ip,port,vendor,protocol,zone_id,site_id,username,password,notes
+MINER-0001,192.168.1.10,4028,antminer,cgminer,,SITE-001,,,sample row (credentials optional)

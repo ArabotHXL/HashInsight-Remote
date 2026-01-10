@@ -27,6 +27,11 @@ def build_edge_config(cfg: AppConfig, data_dir: Path) -> Dict[str, Any]:
         "api_url": cfg.cloud_api_base,
         "api_key": cfg.collector_token,
         "site_id": cfg.site_id,
+        "zone_id": str(getattr(cfg, "zone_id", "") or ""),
+        "device_id": str(getattr(cfg, "device_id", "") or ""),
+        "telemetry_api_mode": str(getattr(cfg, "telemetry_api_mode", "legacy") or "legacy"),
+        "command_api_mode": str(getattr(cfg, "command_api_mode", "auto") or "auto"),
+        "ack_include_snapshot": bool(getattr(cfg, "ack_include_snapshot", True)),
         "upload_include_ip": bool(getattr(cfg, "upload_ip_to_cloud", False)),
         # Backward compatibility: EdgeCollector historically used collection_interval.
         # In v0.2+ we run two loops (latest/raw) and keep collection_interval mapped to latest.
@@ -51,6 +56,24 @@ def build_edge_config(cfg: AppConfig, data_dir: Path) -> Dict[str, Any]:
         "upload_read_timeout": float(cfg.upload_read_timeout_sec),
         "upload_workers": int(cfg.upload_workers),
         "cache_dir": str(data_dir / "cache"),
+        # Local-only Binding Store (CSV -> SQLite)
+        "binding_enable": bool(getattr(cfg, "binding_enable", True)),
+        "binding_csv_path": str(getattr(cfg, "binding_csv_path", "./miners.csv") or "./miners.csv"),
+        "binding_db_path": str(getattr(cfg, "binding_db_path", "") or (data_dir / "data" / "binding_store.db")),
+        "binding_encrypt_credentials": bool(getattr(cfg, "binding_encrypt_credentials", True)),
+        # Offline spool retention (telemetry + acks)
+        "offline_spool_max_age_hours": int(getattr(cfg, "offline_spool_max_age_hours", 24)),
+        "offline_spool_max_total_bytes": int(getattr(cfg, "offline_spool_max_total_bytes", 10 * 1024 * 1024 * 1024)),
+        # Burst sampling
+        "enable_burst_sampling": bool(getattr(cfg, "enable_burst_sampling", False)),
+        "burst_interval_sec": int(getattr(cfg, "burst_interval_sec", 10)),
+        "burst_duration_sec": int(getattr(cfg, "burst_duration_sec", 300)),
+        "burst_hashrate_drop_pct": int(getattr(cfg, "burst_hashrate_drop_pct", 15)),
+        "burst_temp_threshold_c": int(getattr(cfg, "burst_temp_threshold_c", 85)),
+        # Privacy toggles
+        "mask_ip_in_logs": bool(getattr(cfg, "mask_ip_in_logs", True)),
+        "enable_whatsminer_http": bool(getattr(cfg, "enable_whatsminer_http", True)),
+        "inventory_sources": list(getattr(cfg, "inventory_sources", ["miners","binding","ip_ranges"])),
         "miners": miners,
         "ip_ranges": cfg.ip_ranges,
         "enable_commands": bool(cfg.enable_commands),

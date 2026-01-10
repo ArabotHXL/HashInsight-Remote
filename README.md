@@ -34,3 +34,24 @@ print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode().rstrip('='))
 PY
 $env:PICKAXE_LOCAL_KEY = "<paste key>"
 ```
+
+
+
+## 2026-01 Collector Upgrade (v1 command protocol + resiliency)
+
+### What's improved
+- **Command channel v1 support (recommended)**: `GET /api/edge/v1/commands/poll` + `POST /api/edge/v1/commands/{id}/ack`
+- **Legacy command channel still supported** for migration (`/api/collector/commands/*`)
+- **ACK offline spool**: when the WAN/cloud is down, command results are cached locally and replayed later
+- **Stable Device ID**: generated once and persisted under `data/cache/device_id.txt` (used for audit attribution)
+- **Cloud API mode switches**:
+  - Telemetry: `telemetry_api_mode = legacy | v1 | auto`
+  - Commands: `command_api_mode = legacy | v1 | auto`
+- **Better upload error classification** (auth vs http vs network) exposed via status
+
+### Recommended config (most deployments)
+- `telemetry_api_mode = legacy` (keep current `/api/collector/upload`)
+- `command_api_mode = auto` (try v1 first, fall back to legacy)
+
+### Security note
+By default the collector **does not upload internal miner IPs** to the cloud. Miner IPs stay on the edge device only (Pickaxe UI/config).

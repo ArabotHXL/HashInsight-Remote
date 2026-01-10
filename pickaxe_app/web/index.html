@@ -255,6 +255,60 @@
         <label>Collector Token</label>
         <input id="collector_token" placeholder="hsc_..."/>
 
+        <div class="grid-two" style="margin-top:10px;">
+          <div>
+            <label>Zone ID (optional)</label>
+            <input id="zone_id" placeholder="zone_us-east-1"/>
+          </div>
+          <div>
+            <label>Device ID (read-only)</label>
+            <input id="device_id" placeholder="auto-generated" readonly/>
+          </div>
+        </div>
+
+        <div class="grid-two" style="margin-top:10px;">
+          <div>
+            <label>Telemetry API Mode</label>
+            <select id="telemetry_api_mode">
+              <option value="legacy">legacy (/api/collector/upload)</option>
+              <option value="auto">auto (try v1 then legacy)</option>
+              <option value="v1">v1 (/api/edge/v1/telemetry/batch)</option>
+            </select>
+          </div>
+          <div>
+            <label>Command API Mode</label>
+            <select id="command_api_mode">
+              <option value="auto">auto (try v1 then legacy)</option>
+              <option value="v1">v1 (/api/edge/v1/commands/*)</option>
+              <option value="legacy">legacy (/api/collector/commands/*)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="row" style="margin-top:10px;">
+          <div class="col">
+            <label>Enable Commands</label>
+            <select id="enable_commands">
+              <option value="false">Disabled</option>
+              <option value="true">Enabled</option>
+            </select>
+          </div>
+          <div class="col">
+            <label>Command Poll Interval (sec)</label>
+            <input id="command_poll_interval_sec" type="number" min="2" step="1"/>
+          </div>
+        </div>
+
+        <div class="row" style="margin-top:10px;">
+          <div class="col">
+            <label>ACK Include Snapshot</label>
+            <select id="ack_include_snapshot">
+              <option value="true">true</option>
+              <option value="false">false</option>
+            </select>
+          </div>
+        </div>
+
         <label>Local API Secret</label>
         <div class="row">
           <div class="col" style="flex: 1;">

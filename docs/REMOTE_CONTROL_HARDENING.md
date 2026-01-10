@@ -30,3 +30,7 @@ Result payload includes:
 - result_code (0 success, 1 failure, 2 skipped, 3 rejected)
 - result_message
 - site_id, miner_id, device_id, executed_at, duration_ms, command
+
+Note: HTTP-based miner protocols (e.g., Whatsminer HTTP telemetry) are telemetry-only. Edge Collector rejects remote control commands for protocol=http/https/whatsminer_http with `CONTROL_NOT_SUPPORTED_OVER_HTTP`.
+Note: Miner IP addresses are edge-local only and never uploaded to the cloud. `upload_include_ip` is ignored by design.
+

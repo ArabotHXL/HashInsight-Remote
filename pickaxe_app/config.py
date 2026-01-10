@@ -1,6 +1,6 @@
 import json
 import os
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -64,6 +64,16 @@ class AppConfig:
     cloud_api_base: str = "https://calc.hashinsight.net"
     collector_token: str = ""
 
+    # Optional: multi-zone / region binding (used by some cloud deployments)
+    zone_id: str = ""
+    # Optional: override stable edge device id (otherwise generated & persisted locally)
+    device_id: str = ""
+
+    # Cloud API modes
+    telemetry_api_mode: str = "legacy"  # legacy | v1 | auto
+    command_api_mode: str = "auto"      # legacy | v1 | auto
+    ack_include_snapshot: bool = True
+
     # Local API auth secret (protects start/stop/save operations). Stored locally.
     local_api_secret: str = ""
     # Polling
@@ -108,7 +118,44 @@ class AppConfig:
     upload_ip_to_cloud: bool = False
     local_key_env: str = DEFAULT_KEY_ENV
 
-    # Miner sources
+    # ---------------------------
+    # Local-only binding store (CSV -> SQLite)
+    # ---------------------------
+    # If enabled and CSV exists, the collector will import miner bindings into a local
+    # SQLite store and use it as the primary inventory (zone/site filtered).
+    binding_enable: bool = True
+    binding_csv_path: str = "./miners.csv"
+    # If empty, defaults to <data_dir>/binding_store.db
+    binding_db_path: str = ""
+    binding_encrypt_credentials: bool = True
+
+    # ---------------------------
+    # Offline spool retention (telemetry + acks)
+    # ---------------------------
+    offline_spool_max_age_hours: int = 24
+    offline_spool_max_total_bytes: int = 10 * 1024 * 1024 * 1024  # 10GB
+
+    # ---------------------------
+    # Burst sampling (anomaly-driven near-real-time)
+    # ---------------------------
+    enable_burst_sampling: bool = False
+    burst_interval_sec: int = 10
+    burst_duration_sec: int = 300
+    burst_hashrate_drop_pct: int = 15
+    burst_temp_threshold_c: int = 85
+
+    # ---------------------------
+    # Privacy
+    # ---------------------------
+    mask_ip_in_logs: bool = True
+    enable_whatsminer_http: bool = True
+
+    
+    # Inventory sources (order matters for merge): miners | binding | ip_ranges
+    # If config file omits this field, runtime will default to ["miners","binding","ip_ranges"] for backward compatibility.
+    inventory_sources: List[str] = field(default_factory=lambda: ["miners","binding","ip_ranges"])
+
+# Miner sources
     miners: List[MinerConfig] = None  # type: ignore
     ip_ranges: List[Dict[str, Any]] = None  # type: ignore
 
@@ -117,6 +164,15 @@ class AppConfig:
             self.miners = []
         if self.ip_ranges is None:
             self.ip_ranges = []
+
+        # Normalize inventory_sources for backward compatibility
+        inv = getattr(self, "inventory_sources", None)
+        if not isinstance(inv, list) or not inv:
+            self.inventory_sources = ["miners", "binding", "ip_ranges"]
+        else:
+            self.inventory_sources = [str(x).strip().lower() for x in inv if str(x).strip()]
+            if not self.inventory_sources:
+                self.inventory_sources = ["miners", "binding", "ip_ranges"]
 
 def get_config_path(path: Optional[str] = None) -> Path:
     """Resolve the config file path.
@@ -166,11 +222,26 @@ def load_config(path: Optional[str] = None) -> AppConfig:
     cloud_api_base = str(raw.get("cloud_api_base") or raw.get("api_url") or raw.get("api_base") or "")
     collector_token = str(raw.get("collector_token") or raw.get("api_key") or raw.get("token") or "")
 
+    # Inventory sources (merge order): miners | binding | ip_ranges
+    inv_raw = raw.get("inventory_sources")
+    inventory_sources: List[str] = []
+    if isinstance(inv_raw, list):
+        inventory_sources = [str(x).strip().lower() for x in inv_raw if str(x).strip()]
+    elif isinstance(inv_raw, str):
+        inventory_sources = [s.strip().lower() for s in inv_raw.split(",") if s.strip()]
+    if not inventory_sources:
+        inventory_sources = ["miners", "binding", "ip_ranges"]
+
     cfg = AppConfig(
         site_id=str(raw.get("site_id", "site_001")),
         site_name=str(raw.get("site_name", "")),
         cloud_api_base=cloud_api_base,
         collector_token=collector_token,
+        zone_id=str(raw.get('zone_id','')),
+        device_id=str(raw.get('device_id','')),
+        telemetry_api_mode=str(raw.get('telemetry_api_mode', raw.get('telemetry_mode','legacy'))),
+        command_api_mode=str(raw.get('command_api_mode', raw.get('command_mode','auto'))),
+        ack_include_snapshot=bool(raw.get('ack_include_snapshot', True)),
         local_api_secret=str(raw.get("local_api_secret", raw.get("local_api_key", ""))),
         latest_interval_sec=int(raw.get("latest_interval_sec", raw.get("poll_interval_sec", DEFAULT_LATEST_INTERVAL_SEC))),
         raw_interval_sec=int(raw.get("raw_interval_sec", raw.get("poll_interval_sec", DEFAULT_RAW_INTERVAL_SEC))),
@@ -198,6 +269,20 @@ def load_config(path: Optional[str] = None) -> AppConfig:
         encrypt_miners_config=bool(raw.get("encrypt_miners_config", False)),
         upload_ip_to_cloud=bool(raw.get("upload_ip_to_cloud", False)),
         local_key_env=str(raw.get("local_key_env") or DEFAULT_KEY_ENV),
+        binding_enable=bool(raw.get("binding_enable", True)),
+        binding_csv_path=str(raw.get("binding_csv_path") or "./miners.csv"),
+        binding_db_path=str(raw.get("binding_db_path") or ""),
+        binding_encrypt_credentials=bool(raw.get("binding_encrypt_credentials", True)),
+        offline_spool_max_age_hours=int(raw.get("offline_spool_max_age_hours", 24)),
+        offline_spool_max_total_bytes=int(raw.get("offline_spool_max_total_bytes", 10 * 1024 * 1024 * 1024)),
+        enable_burst_sampling=bool(raw.get("enable_burst_sampling", False)),
+        burst_interval_sec=int(raw.get("burst_interval_sec", 10)),
+        burst_duration_sec=int(raw.get("burst_duration_sec", 300)),
+        burst_hashrate_drop_pct=int(raw.get("burst_hashrate_drop_pct", 15)),
+        burst_temp_threshold_c=int(raw.get("burst_temp_threshold_c", 85)),
+        mask_ip_in_logs=bool(raw.get("mask_ip_in_logs", True)),
+        enable_whatsminer_http=bool(raw.get("enable_whatsminer_http", True)),
+        inventory_sources=inventory_sources,
         ip_ranges=raw.get("ip_ranges") or [],
     )
 

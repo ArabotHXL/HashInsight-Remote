@@ -77,3 +77,29 @@ See: `docs/cloud_ingest_flask_blueprint.py`
 
 ## 5) Build a standalone desktop app (optional)
 See: `docs/BUILD.md`
+
+## Edge Collector configuration notes
+
+### Inventory sources
+
+Edge Collector supports multiple inventory inputs. Use `inventory_sources` to choose which sources are enabled and how they are merged:
+
+- `miners`: static miner list from `collector_config.json` (useful for small, fixed fleets)
+- `binding`: local binding store (CSV/SQLite) that maps **miner_id → local IP/port** plus optional local credentials
+- `ip_ranges`: local CIDR discovery (CGMiner API scan + optional Whatsminer HTTP telemetry fallback)
+
+If `inventory_sources` is omitted, the collector defaults to enabling all three for backward compatibility.
+
+Example (binding + discovery only):
+
+```json
+{
+  "inventory_sources": ["binding", "ip_ranges"]
+}
+```
+
+### Privacy and control safety
+
+- Miner IP addresses and credentials are **edge-local only**: they are never uploaded to the cloud and are scrubbed from cached offline batches as well.
+- Whatsminer HTTP is **telemetry-only**. Remote control commands are rejected for `protocol=http/https/whatsminer_http` to prevent unintended actions and credential exposure.
+

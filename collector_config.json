@@ -1,0 +1,34 @@
+{
+  "cloud_api_base": "https://calc.hashinsight.net",
+  "collector_token": "REPLACE_WITH_COLLECTOR_TOKEN",
+  "site_id": "SITE-001",
+  "zone_id": "",
+  "telemetry_api_mode": "legacy",
+  "enable_whatsminer_http": true,
+  "whatsminer_http_timeout": 4,
+  "inventory_sources": [
+    "binding",
+    "ip_ranges"
+  ],
+  "binding_enable": true,
+  "binding_csv_path": "./bindings.csv",
+  "binding_db_path": "./data/bindings.db",
+  "local_key_env": "PICKAXE_LOCAL_KEY",
+  "ip_ranges": [
+    {
+      "cidr": "192.168.1.0/24",
+      "ports": [
+        4028
+      ]
+    }
+  ],
+  "ip_ranges_max_hosts": 128,
+  "ip_ranges_concurrency": 64,
+  "ip_ranges_timeout": 0.5,
+  "offline_spool_max_age_hours": 24,
+  "offline_spool_max_total_bytes": 104857600,
+  "mask_ip_in_logs": true,
+  "poll_interval_sec": 10,
+  "latest_interval_sec": 10,
+  "raw_interval_sec": 60
+}
