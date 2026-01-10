@@ -62,6 +62,7 @@ def _iso_utc_now() -> str:
 class MinerData:
     """矿机数据结构"""
     miner_id: str
+    miner_key: str = ""
     ip_address: str
     timestamp: str
     online: bool
@@ -272,10 +273,11 @@ class MinerDataParser:
     """矿机数据解析器 - 支持多种矿机固件"""
     
     @staticmethod
-    def parse_antminer(summary: Dict, stats: Dict, pools: Dict, ip: str, miner_id: str) -> MinerData:
+    def parse_antminer(summary: Dict, stats: Dict, pools: Any, ip: str, miner_id: str, miner_key: str = "") -> MinerData:
         """解析Antminer数据 (S19/S21/T19等)"""
         data = MinerData(
             miner_id=miner_id,
+            miner_key=miner_key,
             ip_address=ip,
             timestamp=datetime.utcnow().isoformat(),
             online=True
@@ -328,12 +330,12 @@ class MinerDataParser:
         return data
     
     @staticmethod
-    def parse_whatsminer(summary: Dict, stats: Dict, pools: Dict, ip: str, miner_id: str) -> MinerData:
+    def parse_whatsminer(summary: Dict, stats: Dict, pools: Any, ip: str, miner_id: str, miner_key: str = "") -> MinerData:
         """解析Whatsminer数据 (M30/M50等)"""
-        return MinerDataParser.parse_antminer(summary, stats, pools, ip, miner_id)
+        return MinerDataParser.parse_antminer(summary, stats, pools, ip, miner_id, miner_key)
 
     @staticmethod
-    def parse_whatsminer_http(payload: Dict, ip: str, miner_id: str) -> MinerData:
+    def parse_whatsminer_http(payload: Dict, ip: str, miner_id: str, miner_key: str = "") -> MinerData:
         """Best-effort parse of Whatsminer HTTP JSON payload.
 
         Notes:
@@ -458,9 +460,9 @@ class MinerDataParser:
         return md
     
     @staticmethod
-    def parse_avalon(summary: Dict, stats: Dict, pools: Dict, ip: str, miner_id: str) -> MinerData:
+    def parse_avalon(summary: Dict, stats: Dict, pools: Any, ip: str, miner_id: str, miner_key: str = "") -> MinerData:
         """解析Avalon数据"""
-        return MinerDataParser.parse_antminer(summary, stats, pools, ip, miner_id)
+        return MinerDataParser.parse_antminer(summary, stats, pools, ip, miner_id, miner_key)
 
 
 class OfflineCache:
@@ -1035,6 +1037,7 @@ class CommandExecutor:
         api_key: str,
         site_id: str,
         miner_map: Dict[str, Dict],
+        miner_key_map: Optional[Dict[str, Dict]] = None,
         offline_cache: Optional["OfflineCache"] = None,
         device_id: Optional[str] = None,
         zone_id: Optional[str] = None,
@@ -1047,6 +1050,7 @@ class CommandExecutor:
         self.api_key = api_key
         self.site_id = site_id
         self.miner_map = miner_map
+        self.miner_key_map = miner_key_map or {}
         self.offline_cache = offline_cache
         self.device_id = device_id
         self.zone_id = zone_id
@@ -1207,6 +1211,7 @@ class CommandExecutor:
         message: str,
         *,
         miner_id: Optional[str] = None,
+        miner_key: Optional[str] = None,
         command: Optional[str] = None,
         duration_ms: Optional[int] = None,
         before: Optional[Dict[str, Any]] = None,
@@ -1227,6 +1232,8 @@ class CommandExecutor:
         }
         if miner_id:
             payload["miner_id"] = str(miner_id)
+        if miner_key:
+            payload["miner_key"] = str(miner_key)
         if command:
             payload["command"] = str(command)
         if self.device_id:
@@ -1312,6 +1319,7 @@ class CommandExecutor:
         """
         command_id = cmd.get("command_id") or cmd.get("id")
         miner_id = str(cmd.get("miner_id") or "").strip()
+        miner_key = str(cmd.get("miner_key") or cmd.get("target_miner_key") or cmd.get("device_key") or "").strip()
         command_type = str(cmd.get("command") or cmd.get("action") or "").strip()
         params = cmd.get("params") or {}
         cmd_site_id = cmd.get("site_id")
@@ -1370,11 +1378,64 @@ class CommandExecutor:
         if self.offline_cache and command_id and self.offline_cache.is_command_executed(str(command_id)):
             return "skipped", 2, "DUPLICATE_IGNORED", 0, None, None, "duplicate"
 
+        # Resolve target miner by miner_id or miner_key (miner_key preferred).
+        resolved_miner: Optional[Dict[str, Any]] = None
+        if miner_key:
+            try:
+                resolved_miner = (self.miner_key_map or {}).get(str(miner_key))
+            except Exception:
+                resolved_miner = None
+            if resolved_miner:
+                resolved_id = str(resolved_miner.get("id") or resolved_miner.get("asset_id") or "").strip()
+                if miner_id and resolved_id and resolved_id != miner_id:
+                    status, code, message = "failed", 1, "MINER_ID_MISMATCH_FOR_MINER_KEY"
+                    if self.offline_cache and command_id:
+                        self.offline_cache.mark_command_executed(
+                            str(command_id),
+                            str(self.site_id),
+                            resolved_id or miner_id,
+                            command_type,
+                            status,
+                            code,
+                            message,
+                            _iso_utc_now(),
+                        )
+                    return status, code, message, 0, None, None, "invalid_target"
+                if resolved_id:
+                    miner_id = resolved_id
+
         if not miner_id:
-            status, code, message = "failed", 1, "MISSING_MINER_ID"
+            status, code, message = "failed", 1, "MISSING_MINER_TARGET"
             if self.offline_cache and command_id:
-                self.offline_cache.mark_command_executed(str(command_id), str(self.site_id), miner_id, command_type, status, code, message, _iso_utc_now())
+                self.offline_cache.mark_command_executed(
+                    str(command_id),
+                    str(self.site_id),
+                    miner_id,
+                    command_type,
+                    status,
+                    code,
+                    message,
+                    _iso_utc_now(),
+                )
             return status, code, message, 0, None, None, "bad_request"
+
+        miner = resolved_miner or self.miner_map.get(miner_id)
+        if not miner:
+            status, code, message = "failed", 1, (
+                f"MINER_KEY_NOT_REGISTERED_ON_EDGE: {miner_key}" if miner_key else f"MINER_NOT_REGISTERED_ON_EDGE: {miner_id}"
+            )
+            if self.offline_cache and command_id:
+                self.offline_cache.mark_command_executed(
+                    str(command_id),
+                    str(self.site_id),
+                    miner_id,
+                    command_type,
+                    status,
+                    code,
+                    message,
+                    _iso_utc_now(),
+                )
+            return status, code, message, 0, None, None, "not_found"
 
         miner = self.miner_map.get(miner_id)
         if not miner:
@@ -1479,6 +1540,7 @@ class CommandExecutor:
                     result_code=code,
                     message=message,
                     miner_id=str(miner_id) if miner_id is not None else None,
+                    miner_key=(str(cmd.get("miner_key") or cmd.get("target_miner_key") or cmd.get("device_key") or "").strip() or None),
                     command=str(command_type) if command_type is not None else None,
                     duration_ms=duration_ms,
                     before=before,
@@ -1494,6 +1556,7 @@ class CommandExecutor:
                     result_code=1,
                     message=str(e),
                     miner_id=str(miner_id) if miner_id is not None else None,
+                    miner_key=(str(cmd.get("miner_key") or cmd.get("target_miner_key") or cmd.get("device_key") or "").strip() or None),
                     command=str(command_type) if command_type is not None else None,
                     duration_ms=0,
                     before=None,
@@ -1783,6 +1846,51 @@ class EdgeCollector:
                 return (hash(mid) % self.shard_total) == self.shard_index
             self.miners = [m for m in self.miners if _keep(m)]
         
+        # Device identity (miner_key): stable per-miner token stored locally.
+        # Cloud should target miners by miner_key; Edge resolves miner_key -> ip locally.
+        self.device_identity_enable = bool(config.get("device_identity_enable", True))
+        self._miner_by_key: Dict[str, Dict] = {}
+
+        if self.device_identity_enable:
+            try:
+                # Ensure a local binding store exists to persist miner_key (even if binding CSV is not used).
+                if self.binding_store is None:
+                    Path(self.binding_db_path).parent.mkdir(parents=True, exist_ok=True)
+                    self.binding_store = BindingStore(self.binding_db_path)
+
+                for m in (self.miners or []):
+                    asset_id = str(m.get("id") or m.get("asset_id") or m.get("miner_id") or m.get("ip") or "").strip()
+                    ip = str(m.get("ip") or "").strip()
+                    if not asset_id or not ip:
+                        continue
+
+                    vendor = str(m.get("vendor") or m.get("type") or "antminer").lower()
+                    protocol = str(m.get("protocol") or "cgminer").lower()
+                    try:
+                        port = int(m.get("port", 4028) or 4028)
+                    except Exception:
+                        port = 4028
+
+                    mk_pref = str(m.get("miner_key") or m.get("device_key") or "").strip()
+                    creds = m.get("credentials") or m.get("cred") or {}
+                    mk = self.binding_store.upsert_binding(
+                        asset_id=asset_id,
+                        ip=ip,
+                        port=port,
+                        vendor=vendor,
+                        protocol=protocol,
+                        zone_id=str(m.get("zone_id") or self.zone_id or ""),
+                        site_id=str(m.get("site_id") or self.site_id or ""),
+                        miner_key=mk_pref,
+                        credentials=creds,
+                        encrypt_credentials=bool(config.get("binding_encrypt_credentials", True)),
+                    )
+                    m["id"] = asset_id
+                    m["miner_key"] = mk
+            except Exception as e:
+                logger.warning("Device identity (miner_key) initialization failed; continuing without miner_key. err=%s", e)
+                self.device_identity_enable = False
+
         # Enrich miner inventory records (local-only; do NOT upload IP/creds)
         enriched: Dict[str, Dict] = {}
         for m in self.miners:
@@ -1805,11 +1913,13 @@ class EdgeCollector:
 
         self.miner_map = enriched
         self._miner_by_id = dict(self.miner_map)
+        self._miner_by_key = {str(v.get('miner_key')): v for v in self.miner_map.values() if v.get('miner_key')}
         self.command_executor = CommandExecutor(
             self.api_url,
             self.api_key,
             self.site_id,
             self.miner_map,
+            miner_key_map=self._miner_by_key,
             offline_cache=self.cache,
             device_id=self.device_id,
             enforce_site_id=bool(config.get('enforce_site_id_in_commands', True)),
@@ -1855,6 +1965,7 @@ class EdgeCollector:
         """采集单个矿机数据"""
         ip = miner_config.get('ip')
         miner_id = miner_config.get('id', ip)
+        miner_key = str(miner_config.get('miner_key') or miner_config.get('device_key') or '').strip()
         # type/vendor/protocol: used to select TCP(4028) vs HTTP fallback
         miner_type = str(miner_config.get('type', 'antminer') or 'antminer').lower()
         vendor = str(miner_config.get('vendor') or miner_type or 'antminer').lower()
@@ -1921,13 +2032,14 @@ class EdgeCollector:
                     self.binding_store.touch_last_seen(str(miner_id))
                 except Exception:
                     pass
-            return MinerDataParser.parse_whatsminer_http(http_payload, ip, str(miner_id))
+            return MinerDataParser.parse_whatsminer_http(http_payload, ip, str(miner_id), miner_key)
 
         if not summary:
             self._mark_miner_failure(miner_id)
             return MinerData(
-                miner_id=miner_id,
-                ip_address=ip,
+            miner_id=miner_id,
+            miner_key=miner_key,
+            ip_address=ip,
                 timestamp=datetime.utcnow().isoformat(),
                 online=False,
                 error_message=(
@@ -1949,11 +2061,11 @@ class EdgeCollector:
         pools = api.get_pools() if mode == "raw" else []
         
         if miner_type == 'whatsminer':
-            return MinerDataParser.parse_whatsminer(summary, stats, pools, ip, miner_id)
+            return MinerDataParser.parse_whatsminer(summary, stats, pools, ip, miner_id, miner_key)
         elif miner_type == 'avalon':
-            return MinerDataParser.parse_avalon(summary, stats, pools, ip, miner_id)
+            return MinerDataParser.parse_avalon(summary, stats, pools, ip, miner_id, miner_key)
         else:
-            return MinerDataParser.parse_antminer(summary, stats, pools, ip, miner_id)
+            return MinerDataParser.parse_antminer(summary, stats, pools, ip, miner_id, miner_key)
     
     def collect_all(self, *, mode: str = "raw") -> List[MinerData]:
         """并行采集矿机数据
