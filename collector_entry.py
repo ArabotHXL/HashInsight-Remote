@@ -18,6 +18,35 @@ from pathlib import Path
 from pickaxe_app.main import run
 
 
+from pathlib import Path
+
+
+def _ensure_stdio() -> None:
+    """
+    PyInstaller --noconsole/windowed builds may set sys.stdout/sys.stderr to None.
+    Uvicorn's default logging formatter may call sys.stderr.isatty(), which crashes if stderr is None.
+    We redirect stdio to local log files so release builds remain stable and observable.
+    """
+    # Only apply when missing (console=False builds)
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+
+    base = os.getenv("LOCALAPPDATA") or os.getenv("APPDATA") or str(Path.home())
+    log_dir = Path(base) / "HashInsightRemote" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    if sys.stdout is None:
+        sys.stdout = open(log_dir / "stdout.log", "a", encoding="utf-8", buffering=1)
+    if sys.stderr is None:
+        sys.stderr = open(log_dir / "stderr.log", "a", encoding="utf-8", buffering=1)
+
+
+# MUST run before importing pickaxe_app/uvicorn
+_ensure_stdio()
+
+from pickaxe_app.main import run
+
+
 def _logs_dir() -> Path:
     base = os.getenv("LOCALAPPDATA") or os.getenv("APPDATA") or str(Path.home())
     d = Path(base) / "HashInsightRemote" / "logs"
