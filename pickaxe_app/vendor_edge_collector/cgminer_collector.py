@@ -33,7 +33,7 @@ from .utils import mask_ip, redact_ips
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional, Any, Tuple
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from pathlib import Path
 
 logging.basicConfig(
@@ -62,16 +62,21 @@ def _iso_utc_now() -> str:
 class MinerData:
     """矿机数据结构"""
     miner_id: str
-    miner_key: str = ""
     ip_address: str
     timestamp: str
     online: bool
+
+    # optional identifiers (defaults must come after required fields)
+    miner_key: str = ""
+
     hashrate_ghs: float = 0.0
     hashrate_5s_ghs: float = 0.0
     temperature_avg: float = 0.0
     temperature_max: float = 0.0
-    temperature_chips: List[float] = None
-    fan_speeds: List[int] = None
+
+    temperature_chips: List[float] = field(default_factory=list)
+    fan_speeds: List[int] = field(default_factory=list)
+
     frequency_avg: float = 0.0
     accepted_shares: int = 0
     rejected_shares: int = 0
