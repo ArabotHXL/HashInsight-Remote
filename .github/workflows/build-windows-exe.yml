@@ -3,7 +3,7 @@ name: Build HashInsight Remote Windows (Portable ZIP)
 on:
   workflow_dispatch:
   push:
-    branches: ["main"]
+    branches: ["main", "master"]
 
 jobs:
   build:
@@ -25,48 +25,43 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip install pyinstaller==6.17.0
 
-      - name: Build (PyInstaller)
+      - name: Build Release (ONEDIR)
         shell: pwsh
         run: |
           python -c "import PyInstaller; print('PyInstaller', PyInstaller.__version__)"
-          # Important: this spec should be ONEDIR for portability
           python -m PyInstaller --clean --noconfirm PickaxeCollector.spec
 
-      - name: Verify dist output (onefile OR onedir)
+      - name: Build Debug (ONEDIR)
         shell: pwsh
         run: |
-          $onefile = "dist\PickaxeCollector.exe"
-          $onedir  = "dist\PickaxeCollector\PickaxeCollector.exe"
+          python -m PyInstaller --clean --noconfirm PickaxeCollector-debug.spec
 
-          if (Test-Path $onefile) {
-            Write-Host "Found onefile EXE: $onefile"
-          }
-          elseif (Test-Path $onedir) {
-            Write-Host "Found onedir EXE: $onedir"
-          }
-          else {
+      - name: Verify dist output
+        shell: pwsh
+        run: |
+          if (!(Test-Path "dist\PickaxeCollector\PickaxeCollector.exe")) {
             Write-Host "dist tree:"
             Get-ChildItem -Recurse dist | Format-List
-            throw "PickaxeCollector EXE not found in expected onefile/onedir locations."
+            throw "Release EXE not found at dist\PickaxeCollector\PickaxeCollector.exe"
+          }
+          if (!(Test-Path "dist\PickaxeCollector-debug\PickaxeCollector-debug.exe")) {
+            Write-Host "dist tree:"
+            Get-ChildItem -Recurse dist | Format-List
+            throw "Debug EXE not found at dist\PickaxeCollector-debug\PickaxeCollector-debug.exe"
           }
 
-      - name: Package portable zip (prefer onedir folder if present)
+      - name: Package portable ZIP
         shell: pwsh
         run: |
-          $onedirFolder = "dist\PickaxeCollector"
-          $onefileExe   = "dist\PickaxeCollector.exe"
+          $zipPath = "dist\PickaxeCollector-windows-portable.zip"
+          if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 
-          if (Test-Path $onedirFolder) {
-            Compress-Archive -Path "$onedirFolder\*" -DestinationPath "dist\PickaxeCollector-windows-portable.zip" -Force
-          }
-          elseif (Test-Path $onefileExe) {
-            Compress-Archive -Path $onefileExe -DestinationPath "dist\PickaxeCollector-windows-portable.zip" -Force
-          }
-          else {
-            throw "No build output to package."
-          }
+          # Zip BOTH folders so the user gets release + debug builds
+          Compress-Archive -Path "dist\PickaxeCollector","dist\PickaxeCollector-debug" -DestinationPath $zipPath -Force
 
-      - name: Upload artifact (portable zip)
+          Get-FileHash $zipPath -Algorithm SHA256 | Format-List
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: PickaxeCollector-windows-portable
