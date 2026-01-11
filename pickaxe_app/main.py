@@ -25,7 +25,7 @@ def run() -> None:
     # Auto-open the local UI once the server is up
     threading.Timer(1.0, _open_browser, args=(url,)).start()
 
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    uvicorn.run(app, host=host, port=port, log_level="info", use_colors=False)
 
 
 if __name__ == "__main__":
