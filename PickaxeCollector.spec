@@ -2,7 +2,6 @@
 
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_submodules
-from PyInstaller.building.datastruct import Tree
 
 block_cipher = None
 
@@ -11,38 +10,41 @@ ENTRY = REPO_ROOT / "collector_entry.py"
 if not ENTRY.exists():
     raise SystemExit(f"Missing entry: {ENTRY}")
 
-# --- Datas (static files) ---
 datas = []
 
-# Web UI assets (if present)
-web_dir = REPO_ROOT / "pickaxe_app" / "web"
-if web_dir.exists():
-    datas.append(Tree(str(web_dir), prefix="pickaxe_app/web"))
+def add_dir_as_datas(src_dir: Path, dest_root: str) -> None:
+    """Recursively add directory contents as (src_file, dest_dir) tuples."""
+    if not src_dir.exists():
+        return
+    for f in src_dir.rglob("*"):
+        if f.is_file():
+            rel_parent = f.relative_to(src_dir).parent
+            dest = (Path(dest_root) / rel_parent).as_posix()
+            datas.append((str(f), dest))
 
-# Ship example configs/templates with the portable bundle (optional but recommended)
+# Web UI assets (recursive)
+add_dir_as_datas(REPO_ROOT / "pickaxe_app" / "web", "pickaxe_app/web")
+
+# Docs (optional)
+add_dir_as_datas(REPO_ROOT / "docs", "docs")
+
+# Ship templates/examples at bundle root (optional but recommended)
 for fname in ["collector_config.json", "bindings.csv", "README.md"]:
     p = REPO_ROOT / fname
     if p.exists():
         datas.append((str(p), "."))
 
-# Docs (optional)
-docs_dir = REPO_ROOT / "docs"
-if docs_dir.exists():
-    datas.append(Tree(str(docs_dir), prefix="docs"))
-
-# --- Hidden imports (avoid runtime ModuleNotFoundError in frozen builds) ---
 hiddenimports = []
-
-# Your app
 hiddenimports += collect_submodules("pickaxe_app")
 
 # Web stack
-hiddenimports += collect_submodules("uvicorn")
-hiddenimports += collect_submodules("fastapi")
-hiddenimports += collect_submodules("starlette")
+for pkg in ["uvicorn", "fastapi", "starlette"]:
+    try:
+        hiddenimports += collect_submodules(pkg)
+    except Exception:
+        pass
 
-# Common runtime deps used in FastAPI stacks and your collector modules
-# (safe even if not all are installed; if a package isn't present, PyInstaller will ignore at build time)
+# Common deps (safe tries)
 for pkg in ["pydantic", "anyio", "httpx", "requests", "cryptography"]:
     try:
         hiddenimports += collect_submodules(pkg)
@@ -64,7 +66,7 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
-# IMPORTANT: ONEDIR build => EXE exclude_binaries=True + COLLECT at the end
+# ONEDIR build (avoid onefile flash-exit / AV temp extraction issues)
 exe = EXE(
     pyz,
     a.scripts,
@@ -72,11 +74,9 @@ exe = EXE(
     exclude_binaries=True,
     name="PickaxeCollector",
     debug=False,
-    bootloader_ignore_signals=False,
     strip=False,
-    upx=False,           # <-- DO NOT use UPX (reduces AV false positives / “flash and exit”)
-    console=False,       # <-- release: no console window
-    disable_windowed_traceback=False,
+    upx=False,
+    console=False,  # Release: no console
 )
 
 coll = COLLECT(
