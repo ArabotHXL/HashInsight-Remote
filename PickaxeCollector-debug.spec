@@ -2,7 +2,6 @@
 
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_submodules
-from PyInstaller.building.datastruct import Tree
 
 block_cipher = None
 
@@ -13,24 +12,31 @@ if not ENTRY.exists():
 
 datas = []
 
-web_dir = REPO_ROOT / "pickaxe_app" / "web"
-if web_dir.exists():
-    datas.append(Tree(str(web_dir), prefix="pickaxe_app/web"))
+def add_dir_as_datas(src_dir: Path, dest_root: str) -> None:
+    if not src_dir.exists():
+        return
+    for f in src_dir.rglob("*"):
+        if f.is_file():
+            rel_parent = f.relative_to(src_dir).parent
+            dest = (Path(dest_root) / rel_parent).as_posix()
+            datas.append((str(f), dest))
+
+add_dir_as_datas(REPO_ROOT / "pickaxe_app" / "web", "pickaxe_app/web")
+add_dir_as_datas(REPO_ROOT / "docs", "docs")
 
 for fname in ["collector_config.json", "bindings.csv", "README.md"]:
     p = REPO_ROOT / fname
     if p.exists():
         datas.append((str(p), "."))
 
-docs_dir = REPO_ROOT / "docs"
-if docs_dir.exists():
-    datas.append(Tree(str(docs_dir), prefix="docs"))
-
 hiddenimports = []
 hiddenimports += collect_submodules("pickaxe_app")
-hiddenimports += collect_submodules("uvicorn")
-hiddenimports += collect_submodules("fastapi")
-hiddenimports += collect_submodules("starlette")
+
+for pkg in ["uvicorn", "fastapi", "starlette"]:
+    try:
+        hiddenimports += collect_submodules(pkg)
+    except Exception:
+        pass
 
 for pkg in ["pydantic", "anyio", "httpx", "requests", "cryptography"]:
     try:
@@ -60,11 +66,9 @@ exe = EXE(
     exclude_binaries=True,
     name="PickaxeCollector-debug",
     debug=True,
-    bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=True,        # <-- debug: keep console so you can see crashes
-    disable_windowed_traceback=False,
+    console=True,  # Debug: keep console so you can see errors
 )
 
 coll = COLLECT(
