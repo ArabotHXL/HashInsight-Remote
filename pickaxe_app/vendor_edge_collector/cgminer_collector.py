@@ -57,6 +57,42 @@ def _join_url(base: str, path: str) -> str:
 def _iso_utc_now() -> str:
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
+class MinerLockManager:
+    """Per-miner lock registry.
+
+    Purpose:
+    - Prevent concurrent control actions on the same miner (cloud commands vs safety overrides)
+    - Enable batched / parallel execution across many miners safely
+
+    Notes:
+    - Locks are kept in-memory; they are recreated on process restart.
+    """
+
+    def __init__(self):
+        self._guard = threading.Lock()
+        self._locks: Dict[str, threading.Lock] = {}
+
+    def _get(self, miner_id: str) -> threading.Lock:
+        mid = str(miner_id or '').strip()
+        if not mid:
+            # Fallback lock (should not happen)
+            mid = '__unknown__'
+        with self._guard:
+            lk = self._locks.get(mid)
+            if lk is None:
+                lk = threading.Lock()
+                self._locks[mid] = lk
+            return lk
+
+    def acquire(self, miner_id: str, *, blocking: bool = False, timeout: float = 0.0) -> Optional[threading.Lock]:
+        lk = self._get(miner_id)
+        try:
+            ok = lk.acquire(blocking, timeout) if blocking else lk.acquire(False)
+        except TypeError:
+            # Python <3.2 compatibility path (rare)
+            ok = lk.acquire(blocking)
+        return lk if ok else None
+
 
 @dataclass
 class MinerData:
@@ -644,6 +680,48 @@ class OfflineCache:
         except Exception:
             return []
 
+
+
+    def save_safety_event(
+        self,
+        *,
+        site_id: str,
+        zone_id: str,
+        miner_id: str,
+        miner_key: str,
+        action: str,
+        mode: str,
+        temp_max: float,
+        ok: bool,
+        message: str,
+    ) -> None:
+        """Persist a local safety override event (best-effort)."""
+        try:
+            conn = sqlite3.connect(str(self.db_path))
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    'INSERT OR REPLACE INTO safety_events (event_id, site_id, zone_id, miner_id, miner_key, action, mode, temp_max, ok, message) '
+                    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                    (
+                        str(uuid.uuid4()),
+                        str(site_id or ''),
+                        str(zone_id or ''),
+                        str(miner_id or ''),
+                        str(miner_key or ''),
+                        str(action or ''),
+                        str(mode or ''),
+                        float(temp_max or 0.0),
+                        1 if ok else 0,
+                        str(message or ''),
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception:
+            # Never fail the collector due to local audit persistence
+            pass
     def mark_gap_events_sent(self, ids: List[int]) -> None:
         if not ids:
             return
@@ -1050,6 +1128,9 @@ class CommandExecutor:
         enforce_zone_id: bool = True,
         command_api_mode: str = "auto",
         ack_include_snapshot: bool = True,
+        miner_lock_mgr: Optional[MinerLockManager] = None,
+        command_max_workers: int = 1,
+        command_lock_timeout_sec: float = 0.5,
     ):
         self.api_url = (api_url or "").rstrip("/")
         self.api_key = api_key
@@ -1065,6 +1146,17 @@ class CommandExecutor:
         if self.command_api_mode not in ("auto", "legacy", "v1"):
             self.command_api_mode = "auto"
         self.ack_include_snapshot = bool(ack_include_snapshot)
+
+        self.miner_lock_mgr = miner_lock_mgr
+        try:
+            self.command_max_workers = max(1, int(command_max_workers))
+        except Exception:
+            self.command_max_workers = 1
+        try:
+            self.command_lock_timeout_sec = float(command_lock_timeout_sec)
+        except Exception:
+            self.command_lock_timeout_sec = 0.5
+
 
         self.session = requests.Session()
         self.session.headers.update({
@@ -1483,43 +1575,64 @@ class CommandExecutor:
             if self.offline_cache and command_id:
                 self.offline_cache.mark_command_executed(str(command_id), str(self.site_id), miner_id, command_type, status, code, message, _iso_utc_now())
             return status, code, message, 0, None, None, "bad_edge_state"
+        # Per-miner lock: serialize control actions (cloud commands vs safety overrides)
+        lock = None
+        if getattr(self, 'miner_lock_mgr', None) is not None and miner_id:
+            lock = self.miner_lock_mgr.acquire(str(miner_id), blocking=True, timeout=float(getattr(self, 'command_lock_timeout_sec', 0.5)))
+            if not lock:
+                # Defer without ACK; the cloud command remains pending and will be retried next poll
+                return 'deferred', 4, 'MINER_BUSY', 0, None, None, 'miner_busy'
+        try:
 
-        logger.info("Executing command %s: %s on %s (%s:%s)", command_id, command_type, miner_id, mask_ip(ip_address), port)
+            logger.info("Executing command %s: %s on %s (%s:%s)", command_id, command_type, miner_id, mask_ip(ip_address), port)
 
-        t0 = time.time()
-        api = CGMinerAPI(ip_address, port)
-        before = self._snapshot_from_api(api, miner_id, miner_type) if self.ack_include_snapshot else None
+            t0 = time.time()
+            api = CGMinerAPI(ip_address, port)
+            before = self._snapshot_from_api(api, miner_id, miner_type) if self.ack_include_snapshot else None
 
-        success, msg = api.execute_control_command(command_type, params)
-        duration_ms = int((time.time() - t0) * 1000)
+            success, msg = api.execute_control_command(command_type, params)
+            duration_ms = int((time.time() - t0) * 1000)
 
-        # Best-effort after snapshot. For reboot-like commands the miner may temporarily disappear.
-        after = None
-        if self.ack_include_snapshot:
-            try:
-                wait_sec = float(params.get("post_wait_sec", 2.0))
-            except Exception:
-                wait_sec = 2.0
-            if wait_sec > 0:
-                time.sleep(min(wait_sec, 10.0))
-            after = self._snapshot_from_api(api, miner_id, miner_type)
+            # Best-effort after snapshot. For reboot-like commands the miner may temporarily disappear.
+            after = None
+            if self.ack_include_snapshot:
+                try:
+                    wait_sec = float(params.get("post_wait_sec", 2.0))
+                except Exception:
+                    wait_sec = 2.0
+                if wait_sec > 0:
+                    time.sleep(min(wait_sec, 10.0))
+                after = self._snapshot_from_api(api, miner_id, miner_type)
 
-        if success:
-            self.stats["commands_executed"] += 1
-            status, code, err_class = "completed", 0, None
-            logger.info("Command %s succeeded: %s", command_id, msg)
-        else:
-            self.stats["commands_failed"] += 1
-            status, code, err_class = "failed", 1, "execution_failed"
-            logger.warning("Command %s failed: %s", command_id, msg)
+            if success:
+                self.stats["commands_executed"] += 1
+                status, code, err_class = "completed", 0, None
+                logger.info("Command %s succeeded: %s", command_id, msg)
+            else:
+                self.stats["commands_failed"] += 1
+                status, code, err_class = "failed", 1, "execution_failed"
+                logger.warning("Command %s failed: %s", command_id, msg)
 
-        if self.offline_cache and command_id:
-            self.offline_cache.mark_command_executed(str(command_id), str(self.site_id), miner_id, command_type, status, code, msg, _iso_utc_now())
+            if self.offline_cache and command_id:
+                self.offline_cache.mark_command_executed(str(command_id), str(self.site_id), miner_id, command_type, status, code, msg, _iso_utc_now())
 
-        return status, code, msg, duration_ms, before, after, err_class
+            return status, code, msg, duration_ms, before, after, err_class
+        finally:
+            if lock:
+                try:
+                    lock.release()
+                except Exception:
+                    pass
 
     def process_commands(self) -> int:
-        """Process pending control commands."""
+        """Process pending control commands.
+
+        Design:
+        - Fetch commands from cloud (single request)
+        - Execute commands in parallel (miner sockets), but
+        - ACK/report sequentially (HTTP session safety)
+        - If a miner is busy (per-miner lock held), defer without ACK so the command remains pending
+        """
         # Replay cached ACKs first to keep cloud state correct.
         try:
             self.flush_pending_acks()
@@ -1527,17 +1640,48 @@ class CommandExecutor:
             pass
 
         commands, protocol = self.fetch_pending_commands()
-
         if not commands:
             return 0
 
-        for cmd in commands:
+        def _safe_exec(cmd: Dict):
+            try:
+                return self.execute_command(cmd)
+            except Exception as e:
+                return ("failed", 1, str(e), 0, None, None, "exception")
+
+        results = []  # List[Tuple[cmd, (status, code, message, duration_ms, before, after, err_class)]]
+
+        max_workers = max(1, int(getattr(self, 'command_max_workers', 1) or 1))
+        if max_workers == 1 or len(commands) == 1:
+            for cmd in commands:
+                results.append((cmd, _safe_exec(cmd)))
+        else:
+            with ThreadPoolExecutor(max_workers=min(max_workers, len(commands))) as ex:
+                fut_to_cmd = {ex.submit(_safe_exec, cmd): cmd for cmd in commands}
+                for fut in as_completed(fut_to_cmd):
+                    cmd = fut_to_cmd[fut]
+                    try:
+                        res = fut.result()
+                    except Exception as e:
+                        res = ("failed", 1, str(e), 0, None, None, "exception")
+                    results.append((cmd, res))
+
+        acked = 0
+        deferred = 0
+
+        for cmd, res in results:
+            status, code, message, duration_ms, before, after, err_class = res
+
+            # Deferred (miner busy): do not ACK
+            if status == 'deferred':
+                deferred += 1
+                continue
+
             command_id = cmd.get("command_id") or cmd.get("id")
             miner_id = cmd.get("miner_id")
             command_type = cmd.get("command") or cmd.get("action")
 
             try:
-                status, code, message, duration_ms, before, after, err_class = self.execute_command(cmd)
                 self.report_result(
                     protocol,
                     command_id,
@@ -1552,22 +1696,9 @@ class CommandExecutor:
                     after=after,
                     error_class=err_class,
                 )
+                acked += 1
             except Exception as e:
-                logger.error("Command %s execution error: %s", command_id, e)
-                self.report_result(
-                    protocol,
-                    command_id,
-                    status="failed",
-                    result_code=1,
-                    message=str(e),
-                    miner_id=str(miner_id) if miner_id is not None else None,
-                    miner_key=(str(cmd.get("miner_key") or cmd.get("target_miner_key") or cmd.get("device_key") or "").strip() or None),
-                    command=str(command_type) if command_type is not None else None,
-                    duration_ms=0,
-                    before=None,
-                    after=None,
-                    error_class="exception",
-                )
+                logger.error("Command %s ACK error: %s", command_id, e)
 
         # Update pending ACK count for UI
         if self.offline_cache:
@@ -1576,7 +1707,11 @@ class CommandExecutor:
             except Exception:
                 pass
 
-        return len(commands)
+        # Diagnostics: if deferred is high, operator should reduce command concurrency or investigate miner API slowness.
+        if deferred > 0:
+            logger.info("Deferred %s commands due to miner_busy locks", deferred)
+
+        return acked
 
 
 class EdgeCollector:
@@ -1919,6 +2054,35 @@ class EdgeCollector:
         self.miner_map = enriched
         self._miner_by_id = dict(self.miner_map)
         self._miner_by_key = {str(v.get('miner_key')): v for v in self.miner_map.values() if v.get('miner_key')}
+
+        # Shared per-miner lock registry (commands + safety override)
+        self._lock_mgr = MinerLockManager()
+
+        # Local safety override (hybrid mode): cloud strategy + edge emergency protection
+        self.enable_safety_override = bool(config.get('enable_safety_override', False))
+        self.safety_interval_sec = float(config.get('safety_interval_sec', 10))
+        self.safety_max_staleness_sec = float(config.get('safety_max_staleness_sec', 30))
+        self.safety_temp_high_c = float(config.get('safety_temp_high_c', 85))
+        self.safety_temp_emergency_c = float(config.get('safety_temp_emergency_c', 95))
+        self.safety_temp_recover_c = float(config.get('safety_temp_recover_c', 70))
+        self.safety_high_action = str(config.get('safety_high_action', 'disable')).strip().lower()
+        self.safety_emergency_action = str(config.get('safety_emergency_action', 'reboot')).strip().lower()
+        self.safety_recover_action = str(config.get('safety_recover_action', 'enable')).strip().lower()
+        self.safety_high_cooldown_sec = int(config.get('safety_high_cooldown_sec', 1800))
+        self.safety_emergency_cooldown_sec = int(config.get('safety_emergency_cooldown_sec', 3600))
+        self.safety_recover_cooldown_sec = int(config.get('safety_recover_cooldown_sec', 900))
+        self.safety_max_actions_per_tick = int(config.get('safety_max_actions_per_tick', 50))
+        self.safety_workers = int(config.get('safety_workers', min(16, int(self.max_workers) if self.max_workers else 16)))
+
+        # In-memory latest telemetry cache for fast local decisions
+        self._telemetry_cache: Dict[str, Dict[str, Any]] = {}
+        self._telemetry_cache_lock = threading.Lock()
+        self._safety_state: Dict[str, Dict[str, Any]] = {}
+
+        # Background worker threads (guarded)
+        self._bg_lock = threading.Lock()
+        self._cmd_thread: Optional[threading.Thread] = None
+        self._safety_thread: Optional[threading.Thread] = None
         self.command_executor = CommandExecutor(
             self.api_url,
             self.api_key,
@@ -1927,7 +2091,14 @@ class EdgeCollector:
             miner_key_map=self._miner_by_key,
             offline_cache=self.cache,
             device_id=self.device_id,
+            zone_id=self.zone_id,
             enforce_site_id=bool(config.get('enforce_site_id_in_commands', True)),
+            enforce_zone_id=bool(config.get('enforce_zone_id_in_commands', True)),
+            command_api_mode=str(config.get('command_api_mode', 'auto')),
+            ack_include_snapshot=bool(config.get('ack_include_snapshot', True)),
+            miner_lock_mgr=self._lock_mgr,
+            command_max_workers=int(config.get('command_max_workers', 16)),
+            command_lock_timeout_sec=float(config.get('command_lock_timeout_sec', 0.5)),
         )
         
         self.running = False
@@ -2263,6 +2434,7 @@ class EdgeCollector:
                     'stopped': True,
                 }
             data = self.collect_all(mode=mode)
+            self._update_telemetry_cache(data)
             if getattr(self, '_stop_event', None) is not None and self._stop_event.is_set():
                 elapsed_ms = int((time.time() - t0) * 1000)
                 return {
@@ -2307,11 +2479,218 @@ class EdgeCollector:
                 'timestamp': datetime.utcnow().isoformat()
             }
         
+    def start_background_workers(self) -> None:
+        """Start background threads (command polling + safety override) with a thread guard."""
+        with self._bg_lock:
+            # command poller
+            if self.enable_commands:
+                if self._cmd_thread is None or not self._cmd_thread.is_alive():
+                    self._cmd_thread = threading.Thread(target=self._command_poll_loop, name='edge_cmd_poll', daemon=True)
+                    self._cmd_thread.start()
+
+            # safety override
+            if self.enable_safety_override:
+                if self._safety_thread is None or not self._safety_thread.is_alive():
+                    self._safety_thread = threading.Thread(target=self._safety_override_loop, name='edge_safety_override', daemon=True)
+                    self._safety_thread.start()
+
+    def _update_telemetry_cache(self, data: List[MinerData]) -> None:
+        """Update latest in-memory telemetry cache for safety decisions."""
+        try:
+            now = time.time()
+            with self._telemetry_cache_lock:
+                for d in (data or []):
+                    mid = str(getattr(d, 'miner_id', '') or '').strip()
+                    if not mid:
+                        continue
+                    self._telemetry_cache[mid] = {
+                        'collected_at': now,
+                        'timestamp': getattr(d, 'timestamp', ''),
+                        'online': bool(getattr(d, 'online', False)),
+                        'temperature_max': float(getattr(d, 'temperature_max', 0.0) or 0.0),
+                        'temperature_avg': float(getattr(d, 'temperature_avg', 0.0) or 0.0),
+                        'hashrate_ghs': float(getattr(d, 'hashrate_ghs', 0.0) or 0.0),
+                        'power_consumption': float(getattr(d, 'power_consumption', 0.0) or 0.0),
+                        'miner_key': str(getattr(d, 'miner_key', '') or ''),
+                    }
+        except Exception:
+            pass
+
+    def _safety_override_loop(self) -> None:
+        """Local emergency protection loop.
+
+        This loop never requires cloud connectivity.
+        It acts only when:
+        - telemetry is fresh enough
+        - thresholds are breached
+        - cooldown permits
+
+        Default actions:
+        - high temp: disable mining
+        - emergency: reboot miner
+        - recover: re-enable mining
+        """
+        logger.info(
+            'Safety override started. interval=%ss high=%sC emergency=%sC recover=%sC',
+            self.safety_interval_sec,
+            self.safety_temp_high_c,
+            self.safety_temp_emergency_c,
+            self.safety_temp_recover_c,
+        )
+
+        while self.running and (not self._stop_event.is_set()):
+            try:
+                self._safety_tick()
+            except Exception as e:
+                logger.error('Safety override tick error: %s', e)
+
+            try:
+                time.sleep(max(1.0, float(self.safety_interval_sec)))
+            except Exception:
+                time.sleep(5.0)
+
+    def _safety_tick(self) -> None:
+        if not self.enable_safety_override:
+            return
+
+        now = time.time()
+        candidates = []
+        with self._telemetry_cache_lock:
+            for mid, snap in (self._telemetry_cache or {}).items():
+                try:
+                    if not snap:
+                        continue
+                    if not bool(snap.get('online', False)):
+                        continue
+                    collected_at = float(snap.get('collected_at') or 0.0)
+                    age = now - collected_at
+                    if age > float(self.safety_max_staleness_sec):
+                        continue
+                    tmax = float(snap.get('temperature_max') or 0.0)
+                    if tmax <= 0:
+                        continue
+                    candidates.append((mid, tmax, snap))
+                except Exception:
+                    continue
+
+        if not candidates:
+            return
+
+        # hottest first
+        candidates.sort(key=lambda x: x[1], reverse=True)
+
+        # Build action list
+        actions = []
+        for mid, tmax, snap in candidates:
+            st = self._safety_state.get(mid) or {}
+            next_allowed = float(st.get('next_allowed') or 0.0)
+            if now < next_allowed:
+                continue
+
+            mode = str(st.get('mode') or 'normal')
+
+            if tmax >= float(self.safety_temp_emergency_c):
+                if mode == 'emergency':
+                    continue
+                actions.append((mid, snap, 'emergency', self.safety_emergency_action, int(self.safety_emergency_cooldown_sec), tmax))
+            elif tmax >= float(self.safety_temp_high_c):
+                if mode == 'high':
+                    continue
+                actions.append((mid, snap, 'high', self.safety_high_action, int(self.safety_high_cooldown_sec), tmax))
+            elif tmax <= float(self.safety_temp_recover_c):
+                if mode in ('high', 'emergency'):
+                    actions.append((mid, snap, 'normal', self.safety_recover_action, int(self.safety_recover_cooldown_sec), tmax))
+
+            if len(actions) >= int(self.safety_max_actions_per_tick):
+                break
+
+        if not actions:
+            return
+
+        # Execute safety actions in parallel (bounded)
+        max_workers = max(1, int(self.safety_workers or 1))
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(actions))) as ex:
+            futs = [ex.submit(self._perform_safety_action, mid, snap, new_mode, action, cooldown, tmax) for (mid, snap, new_mode, action, cooldown, tmax) in actions]
+            for fut in as_completed(futs):
+                try:
+                    fut.result()
+                except Exception:
+                    pass
+
+    def _perform_safety_action(self, miner_id: str, snap: Dict[str, Any], new_mode: str, action: str, cooldown_sec: int, tmax: float) -> None:
+        miner_id = str(miner_id or '').strip()
+        if not miner_id:
+            return
+
+        # Acquire shared miner lock (non-blocking). If miner is busy with a cloud command, skip this tick.
+        lock = None
+        if getattr(self, '_lock_mgr', None) is not None:
+            lock = self._lock_mgr.acquire(miner_id, blocking=False)
+            if not lock:
+                return
+
+        ok = False
+        message = ''
+        try:
+            miner = self.miner_map.get(miner_id)
+            if not miner:
+                return
+            ip = str(miner.get('ip') or '').strip()
+            port = int(miner.get('port', 4028) or 4028)
+            if not ip:
+                return
+
+            action = str(action or '').strip().lower()
+            if action not in ('enable', 'disable', 'restart', 'reboot', 'set_pool', 'set_fan', 'set_frequency'):
+                return
+
+            api = CGMinerAPI(ip, port, timeout=float(self.miner_timeout_fast or 3.0))
+            ok, message = api.execute_control_command(action, {})
+
+        finally:
+            if lock:
+                try:
+                    lock.release()
+                except Exception:
+                    pass
+
+        # Update state + local audit
+        now = time.time()
+        self._safety_state[miner_id] = {
+            'mode': str(new_mode or 'normal'),
+            'last_action': action,
+            'last_temp_max': float(tmax or 0.0),
+            'last_action_at': now,
+            'next_allowed': now + max(0, int(cooldown_sec or 0)),
+        }
+
+        if ok:
+            logger.warning('SAFETY_OVERRIDE: miner=%s action=%s mode=%s tmax=%.1fC ok=1 msg=%s', miner_id, action, new_mode, float(tmax), message)
+        else:
+            logger.warning('SAFETY_OVERRIDE: miner=%s action=%s mode=%s tmax=%.1fC ok=0 msg=%s', miner_id, action, new_mode, float(tmax), message)
+
+        try:
+            if getattr(self, 'cache', None) is not None:
+                self.cache.save_safety_event(
+                    site_id=self.site_id,
+                    zone_id=self.zone_id,
+                    miner_id=miner_id,
+                    miner_key=str(snap.get('miner_key') or ''),
+                    action=action,
+                    mode=str(new_mode),
+                    temp_max=float(tmax or 0.0),
+                    ok=bool(ok),
+                    message=str(message or ''),
+                )
+        except Exception:
+            pass
+
+
     def _command_poll_loop(self):
         """命令轮询线程"""
         logger.info(f"Command polling started. Interval: {self.command_poll_interval}s")
         
-        while self.running:
+        while self.running and (not self._stop_event.is_set()):
             try:
                 processed = self.command_executor.process_commands()
                 if processed > 0:
@@ -2327,10 +2706,11 @@ class EdgeCollector:
         logger.info(f"HashInsight Remote started. Site: {self.site_id}, Miners: {len(self.miners)}")
         logger.info(f"Collection interval: {self.collection_interval}s, Workers: {self.max_workers}")
         
+        self.start_background_workers()
         if self.enable_commands:
-            command_thread = threading.Thread(target=self._command_poll_loop, daemon=True)
-            command_thread.start()
             logger.info("Command execution enabled - polling for control commands")
+        if self.enable_safety_override:
+            logger.info("Safety override enabled - local emergency protection active")
         
         while self.running:
             try:

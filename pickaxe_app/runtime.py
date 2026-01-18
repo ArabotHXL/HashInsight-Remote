@@ -78,6 +78,22 @@ def build_edge_config(cfg: AppConfig, data_dir: Path) -> Dict[str, Any]:
         "ip_ranges": cfg.ip_ranges,
         "enable_commands": bool(cfg.enable_commands),
         "command_poll_interval": int(cfg.command_poll_interval_sec),
+        "command_max_workers": int(getattr(cfg, "command_max_workers", 16)),
+        # Safety override (local protection)
+        "enable_safety_override": bool(getattr(cfg, "enable_safety_override", False)),
+        "safety_interval_sec": int(getattr(cfg, "safety_interval_sec", 10)),
+        "safety_max_staleness_sec": int(getattr(cfg, "safety_max_staleness_sec", 30)),
+        "safety_temp_high_c": float(getattr(cfg, "safety_temp_high_c", 85)),
+        "safety_temp_emergency_c": float(getattr(cfg, "safety_temp_emergency_c", 95)),
+        "safety_temp_recover_c": float(getattr(cfg, "safety_temp_recover_c", 70)),
+        "safety_high_action": str(getattr(cfg, "safety_high_action", "disable")),
+        "safety_emergency_action": str(getattr(cfg, "safety_emergency_action", "reboot")),
+        "safety_recover_action": str(getattr(cfg, "safety_recover_action", "enable")),
+        "safety_high_cooldown_sec": int(getattr(cfg, "safety_high_cooldown_sec", 1800)),
+        "safety_emergency_cooldown_sec": int(getattr(cfg, "safety_emergency_cooldown_sec", 3600)),
+        "safety_recover_cooldown_sec": int(getattr(cfg, "safety_recover_cooldown_sec", 900)),
+        "safety_max_actions_per_tick": int(getattr(cfg, "safety_max_actions_per_tick", 50)),
+        "safety_workers": int(getattr(cfg, "safety_workers", 16)),
     }
 
 
@@ -164,13 +180,17 @@ class CollectorRunner:
         # Optional: command polling is handled inside EdgeCollector.run().
         # In this runner we implement our own loop via run_once() so we also spin the
         # command poll loop only if enabled.
-        cmd_thread: Optional[threading.Thread] = None
+        # Start background workers once (command polling + safety override)
         try:
-            if getattr(self._edge, "enable_commands", False):
-                cmd_thread = threading.Thread(target=self._edge._command_poll_loop, daemon=True)
-                cmd_thread.start()
+            if hasattr(self._edge, "start_background_workers"):
+                self._edge.start_background_workers()
+            else:
+                # Backward compatibility
+                if getattr(self._edge, "enable_commands", False):
+                    cmd_thread = threading.Thread(target=self._edge._command_poll_loop, daemon=True)
+                    cmd_thread.start()
         except Exception:
-            logger.exception("Failed to start command polling")
+            logger.exception("Failed to start background workers")
 
         # Two-loop scheduler
 

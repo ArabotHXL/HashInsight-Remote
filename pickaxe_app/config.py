@@ -33,6 +33,21 @@ DEFAULT_MAX_WORKERS = 50
 DEFAULT_ENABLE_COMMANDS = False
 DEFAULT_COMMAND_POLL_INTERVAL_SEC = 5
 
+# Safety override (local protection)
+DEFAULT_ENABLE_SAFETY_OVERRIDE = True
+DEFAULT_SAFETY_INTERVAL_SEC = 10
+DEFAULT_SAFETY_MAX_STALENESS_SEC = 30
+DEFAULT_SAFETY_TEMP_HIGH_C = 85
+DEFAULT_SAFETY_TEMP_EMERGENCY_C = 95
+DEFAULT_SAFETY_TEMP_RECOVER_C = 70
+DEFAULT_SAFETY_HIGH_COOLDOWN_SEC = 30 * 60
+DEFAULT_SAFETY_EMERGENCY_COOLDOWN_SEC = 60 * 60
+DEFAULT_SAFETY_RECOVER_COOLDOWN_SEC = 15 * 60
+DEFAULT_SAFETY_MAX_ACTIONS_PER_TICK = 50
+
+# Command execution concurrency on edge
+DEFAULT_COMMAND_MAX_WORKERS = 16
+
 # Sharding (for 5k-10k miners): split miner list across multiple HashInsight Remote instances
 DEFAULT_SHARD_TOTAL = 1
 DEFAULT_SHARD_INDEX = 0
@@ -110,6 +125,25 @@ class AppConfig:
     # Commands
     enable_commands: bool = DEFAULT_ENABLE_COMMANDS
     command_poll_interval_sec: int = DEFAULT_COMMAND_POLL_INTERVAL_SEC
+
+    # Command execution concurrency on edge
+    command_max_workers: int = DEFAULT_COMMAND_MAX_WORKERS
+
+    # Safety override (local protection)
+    enable_safety_override: bool = DEFAULT_ENABLE_SAFETY_OVERRIDE
+    safety_interval_sec: int = DEFAULT_SAFETY_INTERVAL_SEC
+    safety_max_staleness_sec: int = DEFAULT_SAFETY_MAX_STALENESS_SEC
+    safety_temp_high_c: int = DEFAULT_SAFETY_TEMP_HIGH_C
+    safety_temp_emergency_c: int = DEFAULT_SAFETY_TEMP_EMERGENCY_C
+    safety_temp_recover_c: int = DEFAULT_SAFETY_TEMP_RECOVER_C
+    safety_high_action: str = "disable"
+    safety_emergency_action: str = "reboot"
+    safety_recover_action: str = "enable"
+    safety_high_cooldown_sec: int = DEFAULT_SAFETY_HIGH_COOLDOWN_SEC
+    safety_emergency_cooldown_sec: int = DEFAULT_SAFETY_EMERGENCY_COOLDOWN_SEC
+    safety_recover_cooldown_sec: int = DEFAULT_SAFETY_RECOVER_COOLDOWN_SEC
+    safety_max_actions_per_tick: int = DEFAULT_SAFETY_MAX_ACTIONS_PER_TICK
+    safety_workers: int = 16
 
     # Security (local-only IP, optionally encrypted at rest)
     # Default OFF to avoid breaking first-run (user can enable once key is set).
@@ -260,6 +294,21 @@ def load_config(path: Optional[str] = None) -> AppConfig:
         max_workers=int(raw.get("max_workers", DEFAULT_MAX_WORKERS)),
         enable_commands=bool(raw.get("enable_commands", DEFAULT_ENABLE_COMMANDS)),
         command_poll_interval_sec=int(raw.get("command_poll_interval_sec", DEFAULT_COMMAND_POLL_INTERVAL_SEC)),
+        command_max_workers=int(raw.get("command_max_workers", DEFAULT_COMMAND_MAX_WORKERS)),
+        enable_safety_override=bool(raw.get("enable_safety_override", DEFAULT_ENABLE_SAFETY_OVERRIDE)),
+        safety_interval_sec=int(raw.get("safety_interval_sec", DEFAULT_SAFETY_INTERVAL_SEC)),
+        safety_max_staleness_sec=int(raw.get("safety_max_staleness_sec", DEFAULT_SAFETY_MAX_STALENESS_SEC)),
+        safety_temp_high_c=int(raw.get("safety_temp_high_c", DEFAULT_SAFETY_TEMP_HIGH_C)),
+        safety_temp_emergency_c=int(raw.get("safety_temp_emergency_c", DEFAULT_SAFETY_TEMP_EMERGENCY_C)),
+        safety_temp_recover_c=int(raw.get("safety_temp_recover_c", DEFAULT_SAFETY_TEMP_RECOVER_C)),
+        safety_high_action=str(raw.get("safety_high_action", "disable")),
+        safety_emergency_action=str(raw.get("safety_emergency_action", "reboot")),
+        safety_recover_action=str(raw.get("safety_recover_action", "enable")),
+        safety_high_cooldown_sec=int(raw.get("safety_high_cooldown_sec", DEFAULT_SAFETY_HIGH_COOLDOWN_SEC)),
+        safety_emergency_cooldown_sec=int(raw.get("safety_emergency_cooldown_sec", DEFAULT_SAFETY_EMERGENCY_COOLDOWN_SEC)),
+        safety_recover_cooldown_sec=int(raw.get("safety_recover_cooldown_sec", DEFAULT_SAFETY_RECOVER_COOLDOWN_SEC)),
+        safety_max_actions_per_tick=int(raw.get("safety_max_actions_per_tick", DEFAULT_SAFETY_MAX_ACTIONS_PER_TICK)),
+        safety_workers=int(raw.get("safety_workers", 16)),
         shard_total=int(raw.get("shard_total", DEFAULT_SHARD_TOTAL)),
         shard_index=int(raw.get("shard_index", DEFAULT_SHARD_INDEX)),
         miner_timeout_fast_sec=float(raw.get("miner_timeout_fast_sec", DEFAULT_MINER_TIMEOUT_FAST_SEC)),
