@@ -1362,8 +1362,9 @@ class CloudUploader:
                 "mode": mode,
             })
 
-            headers = {"Content-Type": "application/octet-stream", "Content-Encoding": "gzip"}
-            response = self.session.post(url, data=payload, timeout=self.timeout, headers=headers)
+            prev_encoding = self.session.headers.get("Content-Encoding")
+            self.session.headers["Content-Encoding"] = "gzip"
+            response = self.session.post(url, data=payload, timeout=self.timeout)
 
             # If we are in auto mode, a 404/405 likely indicates cloud still on legacy.
             if self.telemetry_api_mode == "auto" and response.status_code in (404, 405):
@@ -1383,7 +1384,12 @@ class CloudUploader:
                 except Exception:
                     pass
 
-                response = self.session.post(url, data=payload, timeout=self.timeout, headers=headers)
+                response = self.session.post(url, data=payload, timeout=self.timeout)
+
+            if prev_encoding is None:
+                self.session.headers.pop("Content-Encoding", None)
+            else:
+                self.session.headers["Content-Encoding"] = prev_encoding
 
             self.last_upload_status["http_status"] = int(response.status_code)
 
