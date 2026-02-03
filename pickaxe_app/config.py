@@ -239,6 +239,22 @@ def clamp_intervals(cfg: AppConfig) -> None:
     # legacy alias
     cfg.poll_interval_sec = max(int(cfg.poll_interval_sec), MIN_LATEST_INTERVAL_SEC)
 
+def _safe_int(value: Any, default: int, warnings: List[str], field: str) -> int:
+    try:
+        return int(value)
+    except Exception:
+        warnings.append(f"Invalid int for {field}: {value!r}. Using default {default}.")
+        return default
+
+
+def _safe_float(value: Any, default: float, warnings: List[str], field: str) -> float:
+    try:
+        return float(value)
+    except Exception:
+        warnings.append(f"Invalid float for {field}: {value!r}. Using default {default}.")
+        return default
+
+
 def load_config(path: Optional[str] = None) -> AppConfig:
     global LAST_WARNINGS
     warnings: List[str] = []
@@ -248,7 +264,11 @@ def load_config(path: Optional[str] = None) -> AppConfig:
         LAST_WARNINGS = []
         return AppConfig()
 
-    raw: Dict[str, Any] = json.loads(p.read_text(encoding="utf-8"))
+    try:
+        raw: Dict[str, Any] = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as exc:
+        LAST_WARNINGS = [f"Failed to parse config: {type(exc).__name__}: {exc}"]
+        return AppConfig()
 
     # Backward compatibility from earlier collector terminology
     # - api_url -> cloud_api_base
@@ -277,44 +297,44 @@ def load_config(path: Optional[str] = None) -> AppConfig:
         command_api_mode=str(raw.get('command_api_mode', raw.get('command_mode','auto'))),
         ack_include_snapshot=bool(raw.get('ack_include_snapshot', True)),
         local_api_secret=str(raw.get("local_api_secret", raw.get("local_api_key", ""))),
-        latest_interval_sec=int(raw.get("latest_interval_sec", raw.get("poll_interval_sec", DEFAULT_LATEST_INTERVAL_SEC))),
-        raw_interval_sec=int(raw.get("raw_interval_sec", raw.get("poll_interval_sec", DEFAULT_RAW_INTERVAL_SEC))),
-        poll_interval_sec=int(raw.get("poll_interval_sec", raw.get("latest_interval_sec", DEFAULT_POLL_INTERVAL_SEC))),
-        timeout_sec=int(raw.get("timeout_sec", DEFAULT_TIMEOUT_SEC)),
+        latest_interval_sec=_safe_int(raw.get("latest_interval_sec", raw.get("poll_interval_sec", DEFAULT_LATEST_INTERVAL_SEC)), DEFAULT_LATEST_INTERVAL_SEC, warnings, "latest_interval_sec"),
+        raw_interval_sec=_safe_int(raw.get("raw_interval_sec", raw.get("poll_interval_sec", DEFAULT_RAW_INTERVAL_SEC)), DEFAULT_RAW_INTERVAL_SEC, warnings, "raw_interval_sec"),
+        poll_interval_sec=_safe_int(raw.get("poll_interval_sec", raw.get("latest_interval_sec", DEFAULT_POLL_INTERVAL_SEC)), DEFAULT_POLL_INTERVAL_SEC, warnings, "poll_interval_sec"),
+        timeout_sec=_safe_int(raw.get("timeout_sec", DEFAULT_TIMEOUT_SEC), DEFAULT_TIMEOUT_SEC, warnings, "timeout_sec"),
         # Upload tuning (prefer upload_*; fall back to legacy connect/read)
-        upload_connect_timeout_sec=int(raw.get("upload_connect_timeout_sec", raw.get("connect_timeout_sec", DEFAULT_CONNECT_TIMEOUT_SEC))),
-        upload_read_timeout_sec=int(raw.get("upload_read_timeout_sec", raw.get("read_timeout_sec", DEFAULT_READ_TIMEOUT_SEC))),
-        upload_workers=int(raw.get("upload_workers", 4)),
-        batch_size=int(raw.get("batch_size", 1000)),
-        max_retries=int(raw.get("max_retries", 5)),
-        latest_max_miners=int(raw.get("latest_max_miners", 2000)),
+        upload_connect_timeout_sec=_safe_int(raw.get("upload_connect_timeout_sec", raw.get("connect_timeout_sec", DEFAULT_CONNECT_TIMEOUT_SEC)), DEFAULT_CONNECT_TIMEOUT_SEC, warnings, "upload_connect_timeout_sec"),
+        upload_read_timeout_sec=_safe_int(raw.get("upload_read_timeout_sec", raw.get("read_timeout_sec", DEFAULT_READ_TIMEOUT_SEC)), DEFAULT_READ_TIMEOUT_SEC, warnings, "upload_read_timeout_sec"),
+        upload_workers=_safe_int(raw.get("upload_workers", 4), 4, warnings, "upload_workers"),
+        batch_size=_safe_int(raw.get("batch_size", 1000), 1000, warnings, "batch_size"),
+        max_retries=_safe_int(raw.get("max_retries", 5), 5, warnings, "max_retries"),
+        latest_max_miners=_safe_int(raw.get("latest_max_miners", 2000), 2000, warnings, "latest_max_miners"),
         # Legacy aliases (kept so older code/tools reading config keep working)
-        connect_timeout_sec=int(raw.get("connect_timeout_sec", DEFAULT_CONNECT_TIMEOUT_SEC)),
-        read_timeout_sec=int(raw.get("read_timeout_sec", DEFAULT_READ_TIMEOUT_SEC)),
-        max_workers=int(raw.get("max_workers", DEFAULT_MAX_WORKERS)),
+        connect_timeout_sec=_safe_int(raw.get("connect_timeout_sec", DEFAULT_CONNECT_TIMEOUT_SEC), DEFAULT_CONNECT_TIMEOUT_SEC, warnings, "connect_timeout_sec"),
+        read_timeout_sec=_safe_int(raw.get("read_timeout_sec", DEFAULT_READ_TIMEOUT_SEC), DEFAULT_READ_TIMEOUT_SEC, warnings, "read_timeout_sec"),
+        max_workers=_safe_int(raw.get("max_workers", DEFAULT_MAX_WORKERS), DEFAULT_MAX_WORKERS, warnings, "max_workers"),
         enable_commands=bool(raw.get("enable_commands", DEFAULT_ENABLE_COMMANDS)),
-        command_poll_interval_sec=int(raw.get("command_poll_interval_sec", DEFAULT_COMMAND_POLL_INTERVAL_SEC)),
-        command_max_workers=int(raw.get("command_max_workers", DEFAULT_COMMAND_MAX_WORKERS)),
+        command_poll_interval_sec=_safe_int(raw.get("command_poll_interval_sec", DEFAULT_COMMAND_POLL_INTERVAL_SEC), DEFAULT_COMMAND_POLL_INTERVAL_SEC, warnings, "command_poll_interval_sec"),
+        command_max_workers=_safe_int(raw.get("command_max_workers", DEFAULT_COMMAND_MAX_WORKERS), DEFAULT_COMMAND_MAX_WORKERS, warnings, "command_max_workers"),
         enable_safety_override=bool(raw.get("enable_safety_override", DEFAULT_ENABLE_SAFETY_OVERRIDE)),
-        safety_interval_sec=int(raw.get("safety_interval_sec", DEFAULT_SAFETY_INTERVAL_SEC)),
-        safety_max_staleness_sec=int(raw.get("safety_max_staleness_sec", DEFAULT_SAFETY_MAX_STALENESS_SEC)),
-        safety_temp_high_c=int(raw.get("safety_temp_high_c", DEFAULT_SAFETY_TEMP_HIGH_C)),
-        safety_temp_emergency_c=int(raw.get("safety_temp_emergency_c", DEFAULT_SAFETY_TEMP_EMERGENCY_C)),
-        safety_temp_recover_c=int(raw.get("safety_temp_recover_c", DEFAULT_SAFETY_TEMP_RECOVER_C)),
+        safety_interval_sec=_safe_int(raw.get("safety_interval_sec", DEFAULT_SAFETY_INTERVAL_SEC), DEFAULT_SAFETY_INTERVAL_SEC, warnings, "safety_interval_sec"),
+        safety_max_staleness_sec=_safe_int(raw.get("safety_max_staleness_sec", DEFAULT_SAFETY_MAX_STALENESS_SEC), DEFAULT_SAFETY_MAX_STALENESS_SEC, warnings, "safety_max_staleness_sec"),
+        safety_temp_high_c=_safe_int(raw.get("safety_temp_high_c", DEFAULT_SAFETY_TEMP_HIGH_C), DEFAULT_SAFETY_TEMP_HIGH_C, warnings, "safety_temp_high_c"),
+        safety_temp_emergency_c=_safe_int(raw.get("safety_temp_emergency_c", DEFAULT_SAFETY_TEMP_EMERGENCY_C), DEFAULT_SAFETY_TEMP_EMERGENCY_C, warnings, "safety_temp_emergency_c"),
+        safety_temp_recover_c=_safe_int(raw.get("safety_temp_recover_c", DEFAULT_SAFETY_TEMP_RECOVER_C), DEFAULT_SAFETY_TEMP_RECOVER_C, warnings, "safety_temp_recover_c"),
         safety_high_action=str(raw.get("safety_high_action", "disable")),
         safety_emergency_action=str(raw.get("safety_emergency_action", "reboot")),
         safety_recover_action=str(raw.get("safety_recover_action", "enable")),
-        safety_high_cooldown_sec=int(raw.get("safety_high_cooldown_sec", DEFAULT_SAFETY_HIGH_COOLDOWN_SEC)),
-        safety_emergency_cooldown_sec=int(raw.get("safety_emergency_cooldown_sec", DEFAULT_SAFETY_EMERGENCY_COOLDOWN_SEC)),
-        safety_recover_cooldown_sec=int(raw.get("safety_recover_cooldown_sec", DEFAULT_SAFETY_RECOVER_COOLDOWN_SEC)),
-        safety_max_actions_per_tick=int(raw.get("safety_max_actions_per_tick", DEFAULT_SAFETY_MAX_ACTIONS_PER_TICK)),
-        safety_workers=int(raw.get("safety_workers", 16)),
-        shard_total=int(raw.get("shard_total", DEFAULT_SHARD_TOTAL)),
-        shard_index=int(raw.get("shard_index", DEFAULT_SHARD_INDEX)),
-        miner_timeout_fast_sec=float(raw.get("miner_timeout_fast_sec", DEFAULT_MINER_TIMEOUT_FAST_SEC)),
-        miner_timeout_slow_sec=float(raw.get("miner_timeout_slow_sec", DEFAULT_MINER_TIMEOUT_SLOW_SEC)),
-        offline_backoff_base_sec=int(raw.get("offline_backoff_base_sec", DEFAULT_OFFLINE_BACKOFF_BASE_SEC)),
-        offline_backoff_max_sec=int(raw.get("offline_backoff_max_sec", DEFAULT_OFFLINE_BACKOFF_MAX_SEC)),
+        safety_high_cooldown_sec=_safe_int(raw.get("safety_high_cooldown_sec", DEFAULT_SAFETY_HIGH_COOLDOWN_SEC), DEFAULT_SAFETY_HIGH_COOLDOWN_SEC, warnings, "safety_high_cooldown_sec"),
+        safety_emergency_cooldown_sec=_safe_int(raw.get("safety_emergency_cooldown_sec", DEFAULT_SAFETY_EMERGENCY_COOLDOWN_SEC), DEFAULT_SAFETY_EMERGENCY_COOLDOWN_SEC, warnings, "safety_emergency_cooldown_sec"),
+        safety_recover_cooldown_sec=_safe_int(raw.get("safety_recover_cooldown_sec", DEFAULT_SAFETY_RECOVER_COOLDOWN_SEC), DEFAULT_SAFETY_RECOVER_COOLDOWN_SEC, warnings, "safety_recover_cooldown_sec"),
+        safety_max_actions_per_tick=_safe_int(raw.get("safety_max_actions_per_tick", DEFAULT_SAFETY_MAX_ACTIONS_PER_TICK), DEFAULT_SAFETY_MAX_ACTIONS_PER_TICK, warnings, "safety_max_actions_per_tick"),
+        safety_workers=_safe_int(raw.get("safety_workers", 16), 16, warnings, "safety_workers"),
+        shard_total=_safe_int(raw.get("shard_total", DEFAULT_SHARD_TOTAL), DEFAULT_SHARD_TOTAL, warnings, "shard_total"),
+        shard_index=_safe_int(raw.get("shard_index", DEFAULT_SHARD_INDEX), DEFAULT_SHARD_INDEX, warnings, "shard_index"),
+        miner_timeout_fast_sec=_safe_float(raw.get("miner_timeout_fast_sec", DEFAULT_MINER_TIMEOUT_FAST_SEC), DEFAULT_MINER_TIMEOUT_FAST_SEC, warnings, "miner_timeout_fast_sec"),
+        miner_timeout_slow_sec=_safe_float(raw.get("miner_timeout_slow_sec", DEFAULT_MINER_TIMEOUT_SLOW_SEC), DEFAULT_MINER_TIMEOUT_SLOW_SEC, warnings, "miner_timeout_slow_sec"),
+        offline_backoff_base_sec=_safe_int(raw.get("offline_backoff_base_sec", DEFAULT_OFFLINE_BACKOFF_BASE_SEC), DEFAULT_OFFLINE_BACKOFF_BASE_SEC, warnings, "offline_backoff_base_sec"),
+        offline_backoff_max_sec=_safe_int(raw.get("offline_backoff_max_sec", DEFAULT_OFFLINE_BACKOFF_MAX_SEC), DEFAULT_OFFLINE_BACKOFF_MAX_SEC, warnings, "offline_backoff_max_sec"),
         encrypt_miners_config=bool(raw.get("encrypt_miners_config", False)),
         upload_ip_to_cloud=bool(raw.get("upload_ip_to_cloud", False)),
         local_key_env=str(raw.get("local_key_env") or DEFAULT_KEY_ENV),
@@ -322,13 +342,13 @@ def load_config(path: Optional[str] = None) -> AppConfig:
         binding_csv_path=str(raw.get("binding_csv_path") or "./miners.csv"),
         binding_db_path=str(raw.get("binding_db_path") or ""),
         binding_encrypt_credentials=bool(raw.get("binding_encrypt_credentials", True)),
-        offline_spool_max_age_hours=int(raw.get("offline_spool_max_age_hours", 24)),
-        offline_spool_max_total_bytes=int(raw.get("offline_spool_max_total_bytes", 10 * 1024 * 1024 * 1024)),
+        offline_spool_max_age_hours=_safe_int(raw.get("offline_spool_max_age_hours", 24), 24, warnings, "offline_spool_max_age_hours"),
+        offline_spool_max_total_bytes=_safe_int(raw.get("offline_spool_max_total_bytes", 10 * 1024 * 1024 * 1024), 10 * 1024 * 1024 * 1024, warnings, "offline_spool_max_total_bytes"),
         enable_burst_sampling=bool(raw.get("enable_burst_sampling", False)),
-        burst_interval_sec=int(raw.get("burst_interval_sec", 10)),
-        burst_duration_sec=int(raw.get("burst_duration_sec", 300)),
-        burst_hashrate_drop_pct=int(raw.get("burst_hashrate_drop_pct", 15)),
-        burst_temp_threshold_c=int(raw.get("burst_temp_threshold_c", 85)),
+        burst_interval_sec=_safe_int(raw.get("burst_interval_sec", 10), 10, warnings, "burst_interval_sec"),
+        burst_duration_sec=_safe_int(raw.get("burst_duration_sec", 300), 300, warnings, "burst_duration_sec"),
+        burst_hashrate_drop_pct=_safe_int(raw.get("burst_hashrate_drop_pct", 15), 15, warnings, "burst_hashrate_drop_pct"),
+        burst_temp_threshold_c=_safe_int(raw.get("burst_temp_threshold_c", 85), 85, warnings, "burst_temp_threshold_c"),
         mask_ip_in_logs=bool(raw.get("mask_ip_in_logs", True)),
         enable_whatsminer_http=bool(raw.get("enable_whatsminer_http", True)),
         inventory_sources=inventory_sources,

@@ -155,12 +155,13 @@ def _normalize_miner_rows(rows: List[List[str]], defaults: Dict[str, Any]) -> Li
                 port_raw = rr[2] if len(rr) >= 3 else ""
                 typ = rr[3] if len(rr) >= 4 else ""
 
-        # Support ip:port in ip field
-        if ip and ":" in ip:
+        # Support ip:port in ip field (avoid breaking IPv6 literals)
+        if ip and ":" in ip and ip.count(":") == 1:
             a, b = ip.split(":", 1)
-            ip = a.strip()
-            if (not port_raw) and b.strip().isdigit():
-                port_raw = b.strip()
+            if a.strip() and b.strip().isdigit():
+                ip = a.strip()
+                if not port_raw:
+                    port_raw = b.strip()
 
         if not ip:
             continue
@@ -455,6 +456,16 @@ def create_app() -> FastAPI:
         current_cfg = AppConfig(**current_cfg_dict) if isinstance(current_cfg_dict, dict) else current_cfg_dict
         current_secret = getattr(current_cfg, "local_api_secret", "")
 
+        inv_raw = raw.get("inventory_sources", getattr(current_cfg, "inventory_sources", ["miners", "binding", "ip_ranges"]))
+        if isinstance(inv_raw, list):
+            inventory_sources = [str(x).strip().lower() for x in inv_raw if str(x).strip()]
+        elif isinstance(inv_raw, str):
+            inventory_sources = [s.strip().lower() for s in inv_raw.split(",") if s.strip()]
+        else:
+            inventory_sources = []
+        if not inventory_sources:
+            inventory_sources = ["miners", "binding", "ip_ranges"]
+
         cfg = AppConfig(
             site_id=str(raw.get("site_id", "site_001")),
             site_name=str(raw.get("site_name", "")),
@@ -501,7 +512,7 @@ def create_app() -> FastAPI:
             burst_temp_threshold_c=int(raw.get("burst_temp_threshold_c", getattr(current_cfg, "burst_temp_threshold_c", 85))),
             mask_ip_in_logs=raw.get("mask_ip_in_logs", getattr(current_cfg, "mask_ip_in_logs", True)) in (True, "true", "True", 1, "1"),
             enable_whatsminer_http=raw.get("enable_whatsminer_http", getattr(current_cfg, "enable_whatsminer_http", True)) in (True, "true", "True", 1, "1"),
-            inventory_sources=list(raw.get("inventory_sources", getattr(current_cfg, "inventory_sources", ["miners","binding","ip_ranges"]))),
+            inventory_sources=inventory_sources,
             miners=miners,
             ip_ranges=list(raw.get("ip_ranges", [])),
         )
