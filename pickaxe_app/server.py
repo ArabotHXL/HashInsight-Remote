@@ -425,6 +425,18 @@ def create_app() -> FastAPI:
 
         _require_local_secret(req)
 
+        def _parse_int(value: Any, default: int, field: str) -> int:
+            try:
+                return int(value)
+            except Exception:
+                raise HTTPException(status_code=400, detail=f"Invalid integer for {field}")
+
+        def _parse_float(value: Any, default: float, field: str) -> float:
+            try:
+                return float(value)
+            except Exception:
+                raise HTTPException(status_code=400, detail=f"Invalid number for {field}")
+
         miners_raw = raw.get("miners", []) or []
         miners: List[MinerConfig] = []
         for m in miners_raw:
@@ -441,14 +453,14 @@ def create_app() -> FastAPI:
                 continue
 
         # Handle older UI payloads that only provide poll_interval_sec.
-        poll = int(raw.get("poll_interval_sec", 60))
-        latest = int(raw.get("latest_interval_sec", poll))
-        raw_int = int(raw.get("raw_interval_sec", max(latest, 60)))
+        poll = _parse_int(raw.get("poll_interval_sec", 60), 60, "poll_interval_sec")
+        latest = _parse_int(raw.get("latest_interval_sec", poll), poll, "latest_interval_sec")
+        raw_int = _parse_int(raw.get("raw_interval_sec", max(latest, 60)), max(latest, 60), "raw_interval_sec")
         latest = max(MIN_LATEST_INTERVAL_SEC, latest)
         raw_int = max(MIN_RAW_INTERVAL_SEC, raw_int)
 
-        shard_total = max(1, int(raw.get("shard_total", 1)))
-        shard_index = int(raw.get("shard_index", 0))
+        shard_total = max(1, _parse_int(raw.get("shard_total", 1), 1, "shard_total"))
+        shard_index = _parse_int(raw.get("shard_index", 0), 0, "shard_index")
         if shard_index < 0 or shard_index >= shard_total:
             shard_index = 0
 
@@ -480,22 +492,22 @@ def create_app() -> FastAPI:
             latest_interval_sec=latest,
             raw_interval_sec=raw_int,
             poll_interval_sec=latest,
-            timeout_sec=float(raw.get("timeout_sec", 5)),
-            max_retries=int(raw.get("max_retries", 5)),
-            max_workers=int(raw.get("max_workers", 50)),
-            batch_size=int(raw.get("batch_size", 1000)),
-            upload_connect_timeout_sec=float(raw.get("upload_connect_timeout_sec", 2)),
-            upload_read_timeout_sec=float(raw.get("upload_read_timeout_sec", 30)),
-            upload_workers=int(raw.get("upload_workers", 4)),
-            latest_max_miners=int(raw.get("latest_max_miners", 500)),
+            timeout_sec=_parse_float(raw.get("timeout_sec", 5), 5, "timeout_sec"),
+            max_retries=_parse_int(raw.get("max_retries", 5), 5, "max_retries"),
+            max_workers=_parse_int(raw.get("max_workers", 50), 50, "max_workers"),
+            batch_size=_parse_int(raw.get("batch_size", 1000), 1000, "batch_size"),
+            upload_connect_timeout_sec=_parse_float(raw.get("upload_connect_timeout_sec", 2), 2, "upload_connect_timeout_sec"),
+            upload_read_timeout_sec=_parse_float(raw.get("upload_read_timeout_sec", 30), 30, "upload_read_timeout_sec"),
+            upload_workers=_parse_int(raw.get("upload_workers", 4), 4, "upload_workers"),
+            latest_max_miners=_parse_int(raw.get("latest_max_miners", 500), 500, "latest_max_miners"),
             shard_total=shard_total,
             shard_index=shard_index,
-            miner_timeout_fast_sec=float(raw.get("miner_timeout_fast_sec", 1.5)),
-            miner_timeout_slow_sec=float(raw.get("miner_timeout_slow_sec", 5.0)),
-            offline_backoff_base_sec=int(raw.get("offline_backoff_base_sec", 30)),
-            offline_backoff_max_sec=int(raw.get("offline_backoff_max_sec", 300)),
+            miner_timeout_fast_sec=_parse_float(raw.get("miner_timeout_fast_sec", 1.5), 1.5, "miner_timeout_fast_sec"),
+            miner_timeout_slow_sec=_parse_float(raw.get("miner_timeout_slow_sec", 5.0), 5.0, "miner_timeout_slow_sec"),
+            offline_backoff_base_sec=_parse_int(raw.get("offline_backoff_base_sec", 30), 30, "offline_backoff_base_sec"),
+            offline_backoff_max_sec=_parse_int(raw.get("offline_backoff_max_sec", 300), 300, "offline_backoff_max_sec"),
             enable_commands=bool(raw.get("enable_commands", False)),
-            command_poll_interval_sec=int(raw.get("command_poll_interval_sec", 5)),
+            command_poll_interval_sec=_parse_int(raw.get("command_poll_interval_sec", 5), 5, "command_poll_interval_sec"),
             upload_ip_to_cloud=raw.get("upload_ip_to_cloud", False) in (True, "true", "True", 1, "1"),
             encrypt_miners_config=raw.get("encrypt_miners_config", False) in (True, "true", "True", 1, "1"),
             local_key_env=str(raw.get("local_key_env", "PICKAXE_LOCAL_KEY")),
@@ -503,13 +515,13 @@ def create_app() -> FastAPI:
             binding_csv_path=str(raw.get("binding_csv_path", getattr(current_cfg, "binding_csv_path", "./miners.csv"))),
             binding_db_path=str(raw.get("binding_db_path", getattr(current_cfg, "binding_db_path", ""))),
             binding_encrypt_credentials=raw.get("binding_encrypt_credentials", getattr(current_cfg, "binding_encrypt_credentials", True)) in (True, "true", "True", 1, "1"),
-            offline_spool_max_age_hours=int(raw.get("offline_spool_max_age_hours", getattr(current_cfg, "offline_spool_max_age_hours", 24))),
-            offline_spool_max_total_bytes=int(raw.get("offline_spool_max_total_bytes", getattr(current_cfg, "offline_spool_max_total_bytes", 10 * 1024 * 1024 * 1024))),
+            offline_spool_max_age_hours=_parse_int(raw.get("offline_spool_max_age_hours", getattr(current_cfg, "offline_spool_max_age_hours", 24)), 24, "offline_spool_max_age_hours"),
+            offline_spool_max_total_bytes=_parse_int(raw.get("offline_spool_max_total_bytes", getattr(current_cfg, "offline_spool_max_total_bytes", 10 * 1024 * 1024 * 1024)), 10 * 1024 * 1024 * 1024, "offline_spool_max_total_bytes"),
             enable_burst_sampling=raw.get("enable_burst_sampling", getattr(current_cfg, "enable_burst_sampling", False)) in (True, "true", "True", 1, "1"),
-            burst_interval_sec=int(raw.get("burst_interval_sec", getattr(current_cfg, "burst_interval_sec", 10))),
-            burst_duration_sec=int(raw.get("burst_duration_sec", getattr(current_cfg, "burst_duration_sec", 300))),
-            burst_hashrate_drop_pct=int(raw.get("burst_hashrate_drop_pct", getattr(current_cfg, "burst_hashrate_drop_pct", 15))),
-            burst_temp_threshold_c=int(raw.get("burst_temp_threshold_c", getattr(current_cfg, "burst_temp_threshold_c", 85))),
+            burst_interval_sec=_parse_int(raw.get("burst_interval_sec", getattr(current_cfg, "burst_interval_sec", 10)), 10, "burst_interval_sec"),
+            burst_duration_sec=_parse_int(raw.get("burst_duration_sec", getattr(current_cfg, "burst_duration_sec", 300)), 300, "burst_duration_sec"),
+            burst_hashrate_drop_pct=_parse_int(raw.get("burst_hashrate_drop_pct", getattr(current_cfg, "burst_hashrate_drop_pct", 15)), 15, "burst_hashrate_drop_pct"),
+            burst_temp_threshold_c=_parse_int(raw.get("burst_temp_threshold_c", getattr(current_cfg, "burst_temp_threshold_c", 85)), 85, "burst_temp_threshold_c"),
             mask_ip_in_logs=raw.get("mask_ip_in_logs", getattr(current_cfg, "mask_ip_in_logs", True)) in (True, "true", "True", 1, "1"),
             enable_whatsminer_http=raw.get("enable_whatsminer_http", getattr(current_cfg, "enable_whatsminer_http", True)) in (True, "true", "True", 1, "1"),
             inventory_sources=inventory_sources,
