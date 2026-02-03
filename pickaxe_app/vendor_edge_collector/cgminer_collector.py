@@ -36,6 +36,11 @@ from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 
+import base64
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from ..crypto import load_local_key
+
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -56,6 +61,59 @@ def _join_url(base: str, path: str) -> str:
 
 def _iso_utc_now() -> str:
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+# -----------------------------
+# Local at-rest encryption (offline spool)
+# -----------------------------
+_ENC1_B = b"ENC1"  # BLOB prefix: ENC1 + 12-byte nonce + ciphertext(tag included)
+_ENC1_S = "ENC1:"  # TEXT prefix: ENC1:<base64url(nonce+ciphertext)>
+
+def _b64u_encode(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).decode("utf-8").rstrip("=")
+
+def _b64u_decode(s: str) -> bytes:
+    s = (s or "").strip()
+    pad = "=" * ((4 - (len(s) % 4)) % 4)
+    return base64.urlsafe_b64decode(s + pad)
+
+def _encrypt_blob(pt: bytes, key: bytes) -> bytes:
+    aes = AESGCM(key)
+    nonce = os.urandom(12)
+    ct = aes.encrypt(nonce, pt, None)
+    return _ENC1_B + nonce + ct
+
+def _decrypt_blob(blob: bytes, key: bytes) -> bytes:
+    if not blob or not isinstance(blob, (bytes, bytearray)):
+        return blob
+    if not blob.startswith(_ENC1_B):
+        return blob
+    if len(blob) < 4 + 12 + 16:
+        raise ValueError("encrypted blob too short")
+    nonce = blob[4:16]
+    ct = blob[16:]
+    aes = AESGCM(key)
+    return aes.decrypt(nonce, ct, None)
+
+def _encrypt_text(s: str, key: bytes) -> str:
+    aes = AESGCM(key)
+    nonce = os.urandom(12)
+    pt = (s or "").encode("utf-8")
+    ct = aes.encrypt(nonce, pt, None)
+    return _ENC1_S + _b64u_encode(nonce + ct)
+
+def _decrypt_text(s: str, key: bytes) -> str:
+    if not s or not isinstance(s, str) or not s.startswith(_ENC1_S):
+        return s
+    raw = _b64u_decode(s[len(_ENC1_S):])
+    if len(raw) < 12 + 16:
+        raise ValueError("encrypted text too short")
+    nonce = raw[:12]
+    ct = raw[12:]
+    aes = AESGCM(key)
+    pt = aes.decrypt(nonce, ct, None)
+    return pt.decode("utf-8", errors="strict")
+
 
 class MinerLockManager:
     """Per-miner lock registry.
@@ -515,12 +573,30 @@ class OfflineCache:
         *,
         max_age_hours: int = 24,
         max_total_bytes: int = 10 * 1024 * 1024 * 1024,
+        encrypt_spool: bool = False,
+        require_key: bool = False,
+        key_env: str = "PICKAXE_LOCAL_KEY",
     ):
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.cache_dir / "offline_cache.db"
         self.max_age_hours = int(max_age_hours)
         self.max_total_bytes = int(max_total_bytes)
+
+        # Optional at-rest encryption for offline spool tables
+        self.encrypt_spool = bool(encrypt_spool)
+        self.require_key = bool(require_key)
+        self.key_env = str(key_env or "PICKAXE_LOCAL_KEY")
+        self._spool_key: Optional[bytes] = None
+        if self.encrypt_spool or self.require_key:
+            try:
+                self._spool_key = load_local_key(self.key_env)
+            except Exception as e:
+                if self.require_key:
+                    raise
+                self._spool_key = None
+                logger.warning("Offline spool encryption disabled (missing key): %s", e)
+
         self._init_db()
     
     def _init_db(self):
@@ -572,6 +648,22 @@ class OfflineCache:
                 meta_json TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 sent_at TEXT DEFAULT ''
+            )
+        ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS safety_events (
+                event_id TEXT PRIMARY KEY,
+                site_id TEXT,
+                zone_id TEXT,
+                miner_id TEXT,
+                miner_key TEXT,
+                action TEXT,
+                mode TEXT,
+                temp_max REAL,
+                ok INTEGER,
+                message TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
 
@@ -653,6 +745,38 @@ class OfflineCache:
         except Exception:
             return
 
+    
+    def _maybe_encrypt_blob(self, data: bytes) -> bytes:
+        if not self._spool_key:
+            return data
+        try:
+            return _encrypt_blob(data, self._spool_key)
+        except Exception:
+            return data
+
+    def _maybe_decrypt_blob(self, data: bytes) -> bytes:
+        if not self._spool_key:
+            return data
+        try:
+            return _decrypt_blob(data, self._spool_key)
+        except Exception:
+            return data
+
+    def _maybe_encrypt_text(self, s: str) -> str:
+        if not self._spool_key:
+            return s
+        try:
+            return _encrypt_text(s, self._spool_key)
+        except Exception:
+            return s
+
+    def _maybe_decrypt_text(self, s: str) -> str:
+        if not self._spool_key:
+            return s
+        try:
+            return _decrypt_text(s, self._spool_key)
+        except Exception:
+            return s
     def list_unsent_gap_events(self, limit: int = 200) -> List[Dict[str, Any]]:
         try:
             conn = sqlite3.connect(str(self.db_path))
@@ -739,23 +863,51 @@ class OfflineCache:
         except Exception:
             return
     
+
+
     def save_batch(self, batch_id: str, data: bytes):
-        """保存待上传批次"""
-        conn = sqlite3.connect(str(self.db_path))
-        cursor = conn.cursor()
+        """保存待上传批次（可选加密 + retention/cap）。
+
+        Notes:
+        - If a single batch exceeds max_total_bytes, we drop it and record a gap_event.
+        - Best-effort; never raises.
+        """
         try:
-            cursor.execute(
-                'INSERT OR REPLACE INTO pending_uploads (batch_id, data) VALUES (?, ?)',
-                (batch_id, data)
-            )
-            conn.commit()
-            logger.info(f"Cached batch {batch_id} for later upload")
+            if self.max_total_bytes > 0 and isinstance(data, (bytes, bytearray)) and len(data) > self.max_total_bytes:
+                self.record_gap_event(
+                    "telemetry_spool_drop",
+                    _iso_utc_now(),
+                    _iso_utc_now(),
+                    {"batch_id": batch_id, "bytes": int(len(data)), "reason": "batch_larger_than_cap"},
+                )
+                logger.warning("Drop telemetry batch %s (size=%s > cap=%s)", batch_id, len(data), self.max_total_bytes)
+                return
+
+            # pre-clean to free space
             self.cleanup(max_age_hours=self.max_age_hours, max_total_bytes=self.max_total_bytes)
-        finally:
-            conn.close()
-    
+
+            blob = self._maybe_encrypt_blob(data)
+
+            conn = sqlite3.connect(str(self.db_path))
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    'INSERT OR REPLACE INTO pending_uploads (batch_id, data) VALUES (?, ?)',
+                    (batch_id, blob)
+                )
+                conn.commit()
+                logger.info("Cached batch %s for later upload", batch_id)
+            finally:
+                conn.close()
+
+            # post-clean to enforce caps
+            self.cleanup(max_age_hours=self.max_age_hours, max_total_bytes=self.max_total_bytes)
+        except Exception:
+            return
+
+
     def get_pending_batches(self, max_retry: int = 5) -> List[Tuple[str, bytes]]:
-        """获取待上传批次"""
+        """获取待上传批次（自动解密）。"""
         conn = sqlite3.connect(str(self.db_path))
         cursor = conn.cursor()
         try:
@@ -763,7 +915,14 @@ class OfflineCache:
                 'SELECT batch_id, data FROM pending_uploads WHERE retry_count < ? ORDER BY created_at',
                 (max_retry,)
             )
-            return cursor.fetchall()
+            rows = cursor.fetchall() or []
+            out: List[Tuple[str, bytes]] = []
+            for bid, blob in rows:
+                try:
+                    out.append((bid, self._maybe_decrypt_blob(blob)))
+                except Exception:
+                    out.append((bid, blob))
+            return out
         finally:
             conn.close()
 
@@ -855,39 +1014,51 @@ class OfflineCache:
     # -------------------------
     # Pending ACK spool (command results)
     # -------------------------
-    def save_ack(self, ack_id: str, protocol: str, endpoint: str, payload_json: str, *, max_payload_chars: int = 200000) -> None:
-        """Persist an ACK payload for later replay.
 
-        - ack_id: typically command_id
-        - protocol: 'v1' or 'legacy'
-        - endpoint: relative endpoint path used for replay
-        - payload_json: JSON string (kept small; truncated if needed)
-        """
-        if not ack_id:
+
+    def save_ack(self, ack_id: str, protocol: str, endpoint: str, payload_json: str):
+        """Cache a command ACK for retry (optional encryption)."""
+        try:
+            # pre-clean to free space
+            self.cleanup(max_age_hours=self.max_age_hours, max_total_bytes=self.max_total_bytes)
+
+            payload_store = self._maybe_encrypt_text(payload_json)
+
+            conn = sqlite3.connect(str(self.db_path))
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    'INSERT OR REPLACE INTO pending_acks (ack_id, protocol, endpoint, payload_json) VALUES (?, ?, ?, ?)',
+                    (ack_id, protocol, endpoint, payload_store)
+                )
+                conn.commit()
+                logger.info("Cached ACK %s for later send", ack_id)
+            finally:
+                conn.close()
+
+            self.cleanup(max_age_hours=self.max_age_hours, max_total_bytes=self.max_total_bytes)
+        except Exception:
             return
-        if payload_json and len(payload_json) > max_payload_chars:
-            payload_json = payload_json[:max_payload_chars]
-        conn = sqlite3.connect(str(self.db_path))
-        cursor = conn.cursor()
-        try:
-            cursor.execute(
-                'INSERT OR REPLACE INTO pending_acks (ack_id, protocol, endpoint, payload_json, last_error) VALUES (?, ?, ?, ?, ?)',
-                (str(ack_id), str(protocol), str(endpoint), str(payload_json or ""), ""),
-            )
-            conn.commit()
-        finally:
-            conn.close()
 
-    def get_pending_acks(self, max_retry: int = 10, limit: int = 50) -> List[Tuple[str, str, str, str]]:
-        """Return (ack_id, protocol, endpoint, payload_json) pending replay."""
+
+    def get_pending_acks(self, max_retry: int = 5) -> List[Tuple[str, str, str, str]]:
+        """Get cached ACKs for resend (auto decrypt)."""
         conn = sqlite3.connect(str(self.db_path))
         cursor = conn.cursor()
         try:
             cursor.execute(
-                'SELECT ack_id, protocol, endpoint, payload_json FROM pending_acks WHERE retry_count < ? ORDER BY created_at LIMIT ?',
-                (int(max_retry), int(limit)),
+                'SELECT ack_id, protocol, endpoint, payload_json FROM pending_acks WHERE retry_count < ? ORDER BY created_at',
+                (max_retry,)
             )
-            return cursor.fetchall()
+            rows = cursor.fetchall() or []
+            out: List[Tuple[str, str, str, str]] = []
+            for ack_id, protocol, endpoint, payload_json in rows:
+                try:
+                    payload_json = self._maybe_decrypt_text(payload_json)
+                except Exception:
+                    pass
+                out.append((ack_id, protocol, endpoint, payload_json))
+            return out
         finally:
             conn.close()
 
@@ -927,6 +1098,46 @@ class OfflineCache:
             conn.close()
 
 
+
+class SourceSeqManager:
+    """Persistent monotonic source sequence generator.
+
+    Purpose:
+    - Assign a strict, increasing sequence number to each telemetry record.
+    - Survives process restarts (stored in cache_dir/source_seq).
+    """
+
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self._value = 0
+        try:
+            if self.path.exists():
+                raw = self.path.read_text(encoding="utf-8").strip()
+                self._value = int(raw or "0")
+        except Exception:
+            self._value = 0
+
+    def next_range(self, n: int) -> Tuple[int, int]:
+        """Reserve a contiguous range (start, end) inclusive."""
+        n = int(n or 0)
+        if n <= 0:
+            return (0, 0)
+        with self._lock:
+            start = self._value + 1
+            end = self._value + n
+            self._value = end
+            try:
+                tmp = self.path.with_suffix(".tmp")
+                tmp.write_text(str(self._value), encoding="utf-8")
+                tmp.replace(self.path)
+            except Exception:
+                # best-effort persistence
+                pass
+            return (start, end)
+
+
 class CloudUploader:
     """云端数据上传器
 
@@ -951,11 +1162,34 @@ class CloudUploader:
         connect_timeout: float = 5.0,
         read_timeout: float = 30.0,
         telemetry_api_mode: str = "legacy",
+        device_id: str = "",
+        zone_id: str = "",
+        envelope_enable: bool = False,
+        payload_encrypt: bool = False,
+        payload_encrypt_require_key: bool = False,
+        seq_manager: Optional[SourceSeqManager] = None,
     ):
         self.api_url = (api_url or "").rstrip("/")
         self.api_key = api_key
         self.site_id = site_id
         self.include_ip = bool(include_ip)
+        self.device_id = str(device_id or "").strip()
+        self.zone_id = str(zone_id or "").strip()
+        self.envelope_enable = bool(envelope_enable)
+        self.payload_encrypt = bool(payload_encrypt)
+        self.payload_encrypt_require_key = bool(payload_encrypt_require_key)
+        self.seq_manager = seq_manager
+
+        self._payload_key: Optional[bytes] = None
+        if self.payload_encrypt or self.payload_encrypt_require_key:
+            try:
+                self._payload_key = load_local_key("PICKAXE_LOCAL_KEY")
+            except Exception as e:
+                if self.payload_encrypt_require_key:
+                    raise
+                self._payload_key = None
+                logger.warning("Telemetry payload encryption disabled (missing key): %s", e)
+
         self.telemetry_api_mode = (telemetry_api_mode or "legacy").strip().lower()
         if self.telemetry_api_mode not in ("legacy", "v1", "auto"):
             self.telemetry_api_mode = "legacy"
@@ -968,7 +1202,9 @@ class CloudUploader:
             # Also send Authorization for future-proofing
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/octet-stream",
-            "Content-Encoding": "gzip",
+            # Content-Encoding is set per-request (gzip for legacy+envelope)
+            "X-Device-ID": self.device_id,
+            "X-Zone-ID": self.zone_id,
         })
         # Use a tuple timeout so connect vs read are controlled independently.
         self.timeout = (float(connect_timeout), float(read_timeout))
@@ -995,47 +1231,116 @@ class CloudUploader:
     def _fallback_endpoint(self) -> str:
         return "api/collector/upload"
 
-    def build_payload(self, data: List[MinerData]) -> bytes:
-        """Build a gzipped JSON payload for telemetry upload.
 
-        Enforces: no IP/credential fields unless include_ip=True.
+    def build_payload(self, data: List[MinerData], *, mode: str = "raw") -> bytes:
+        """Build payload for telemetry upload.
+
+        - legacy: gzipped JSON list[record]
+        - v1:     gzipped JSON TelemetryEnvelope (schema=telemetry_envelope.v1)
+
+        By default we stay legacy. Envelope is emitted only when:
+          - telemetry_api_mode == 'v1', OR
+          - telemetry_api_mode == 'auto' AND envelope_enable == True
         """
         rows: List[Dict[str, Any]] = []
         for d in (data or []):
             dd = asdict(d)
             if not self.include_ip:
                 dd.pop("ip_address", None)
-                # defense-in-depth: remove any accidental sensitive keys if present
                 for k in ("ip", "host", "hostname", "credentials", "cred", "password", "username"):
                     dd.pop(k, None)
             rows.append(dd)
-        return gzip.compress(json.dumps(rows).encode("utf-8"))
+
+        use_envelope = (self.telemetry_api_mode == "v1") or (self.telemetry_api_mode == "auto" and self.envelope_enable)
+
+        if not use_envelope:
+            return gzip.compress(json.dumps(rows).encode("utf-8"))
+
+        seq_start, seq_end = (0, 0)
+        if self.seq_manager:
+            seq_start, seq_end = self.seq_manager.next_range(len(rows))
+            if seq_start and seq_end:
+                for i, r in enumerate(rows):
+                    r["source_seq"] = seq_start + i
+
+        # Minimal envelope v1
+        env: Dict[str, Any] = {
+            "schema": "telemetry_envelope.v1",
+            "site_id": self.site_id,
+            "zone_id": self.zone_id,
+            "device_id": self.device_id,
+            "sent_at": _iso_utc_now(),
+            "mode": str(mode or "raw"),
+            "record_count": int(len(rows)),
+            "source_seq_start": int(seq_start or 0),
+            "source_seq_end": int(seq_end or 0),
+            "compression": "gzip",
+        }
+
+        if self.payload_encrypt and self._payload_key:
+            # Encrypt the records list as bytes; store base64url fields.
+            aes = AESGCM(self._payload_key)
+            nonce = os.urandom(12)
+            pt = json.dumps(rows, ensure_ascii=False).encode("utf-8")
+            ct = aes.encrypt(nonce, pt, None)
+            env["payload_enc"] = {
+                "v": 1,
+                "alg": "AES-256-GCM",
+                "nonce_b64": _b64u_encode(nonce),
+                "ciphertext_b64": _b64u_encode(ct),
+            }
+        else:
+            env["records"] = rows
+
+        return gzip.compress(json.dumps(env, ensure_ascii=False).encode("utf-8"))
+
 
     def scrub_compressed_payload(self, compressed: bytes) -> bytes:
         """Sanitize an existing cached payload so it cannot leak IP/credentials.
 
-        Protects against older cached batches created before guards were enforced.
+        Supports both:
+        - legacy list payload
+        - envelope v1 with 'records'
         """
         if self.include_ip:
             return compressed
         try:
             raw = gzip.decompress(compressed).decode("utf-8")
             obj = json.loads(raw)
-            if not isinstance(obj, list):
-                return compressed
             changed = False
-            for row in obj:
-                if not isinstance(row, dict):
-                    continue
+
+            def _scrub_row(row: Dict[str, Any]) -> bool:
+                local_changed = False
                 for k in ("ip_address", "ip", "host", "hostname", "credentials", "cred", "password", "username"):
                     if k in row:
                         row.pop(k, None)
-                        changed = True
-            if changed:
-                return gzip.compress(json.dumps(obj).encode("utf-8"))
+                        local_changed = True
+                return local_changed
+
+            if isinstance(obj, list):
+                for row in obj:
+                    if isinstance(row, dict):
+                        if _scrub_row(row):
+                            changed = True
+                if changed:
+                    return gzip.compress(json.dumps(obj).encode("utf-8"))
+                return compressed
+
+            if isinstance(obj, dict):
+                # envelope
+                records = obj.get("records")
+                if isinstance(records, list):
+                    for row in records:
+                        if isinstance(row, dict):
+                            if _scrub_row(row):
+                                changed = True
+                    if changed:
+                        return gzip.compress(json.dumps(obj, ensure_ascii=False).encode("utf-8"))
+            # Encrypted envelope cannot be scrubbed post-hoc (but we already scrub before encrypt)
+            return compressed
         except Exception:
-            pass
-        return compressed
+            return compressed
+
 
     def upload_compressed(self, compressed: bytes, *, mode: str = "raw") -> bool:
         """Upload a pre-built gzipped payload (used for offline spool replay)."""
@@ -1057,13 +1362,28 @@ class CloudUploader:
                 "mode": mode,
             })
 
-            response = self.session.post(url, data=payload, timeout=self.timeout)
+            headers = {"Content-Type": "application/octet-stream", "Content-Encoding": "gzip"}
+            response = self.session.post(url, data=payload, timeout=self.timeout, headers=headers)
 
             # If we are in auto mode, a 404/405 likely indicates cloud still on legacy.
             if self.telemetry_api_mode == "auto" and response.status_code in (404, 405):
                 endpoint = self._fallback_endpoint()
                 url = _join_url(self.api_url, endpoint)
-                response = self.session.post(url, data=payload, timeout=self.timeout)
+
+                # If payload is an envelope, downgrade to legacy list for fallback.
+                try:
+                    raw = gzip.decompress(payload).decode("utf-8")
+                    obj = json.loads(raw)
+                    if isinstance(obj, dict) and isinstance(obj.get("records"), list):
+                        legacy_rows = obj.get("records")
+                        payload = gzip.compress(json.dumps(legacy_rows).encode("utf-8"))
+                    elif isinstance(obj, dict) and isinstance(obj.get("payload_enc"), dict):
+                        # cannot downgrade encrypted payload; keep original
+                        pass
+                except Exception:
+                    pass
+
+                response = self.session.post(url, data=payload, timeout=self.timeout, headers=headers)
 
             self.last_upload_status["http_status"] = int(response.status_code)
 
@@ -1083,24 +1403,22 @@ class CloudUploader:
                 err = None
                 if isinstance(result, dict):
                     err = result.get("error") or result.get("message")
-                self.last_upload_status.update({"ok": False, "error_kind": "app", "error": str(err or "unknown_error")})
+                self.last_upload_status.update({"ok": False, "error_kind": "api", "error": err or "unexpected_response"})
                 return False
 
             self.last_upload_status.update({"ok": False, "error_kind": "http", "error": f"HTTP {response.status_code}"})
             return False
-
-        except requests.exceptions.ConnectionError as e:
-            self.last_upload_status.update({"ok": False, "error_kind": "network", "error": str(e), "at": _iso_utc_now(), "endpoint": endpoint, "mode": mode})
-            logger.warning("Network unavailable, data will be cached")
+        except requests.exceptions.RequestException as e:
+            self.last_upload_status.update({"ok": False, "error_kind": "network", "error": str(e)})
             return False
         except Exception as e:
-            self.last_upload_status.update({"ok": False, "error_kind": "error", "error": f"{type(e).__name__}: {e}", "at": _iso_utc_now(), "endpoint": endpoint, "mode": mode})
-            logger.error("Upload error: %s", e)
+            self.last_upload_status.update({"ok": False, "error_kind": "exception", "error": str(e)})
             return False
+
 
     def upload(self, data: List[MinerData], *, mode: str = "raw") -> bool:
         """Convenience wrapper: build payload then upload."""
-        return self.upload_compressed(self.build_payload(data), mode=mode)
+        return self.upload_compressed(self.build_payload(data, mode=mode), mode=mode)
 
 class CommandExecutor:
     """命令执行器 - 从云端获取并执行控制命令
@@ -1948,6 +2266,9 @@ class EdgeCollector:
             config.get('cache_dir', './cache'),
             max_age_hours=int(config.get('offline_spool_max_age_hours', 24)),
             max_total_bytes=int(config.get('offline_spool_max_total_bytes', 10 * 1024 * 1024 * 1024)),
+            encrypt_spool=bool(config.get('offline_spool_encrypt', False)),
+            require_key=bool(config.get('offline_spool_require_key', False)),
+            key_env=str(config.get('offline_spool_key_env') or config.get('local_key_env') or 'PICKAXE_LOCAL_KEY'),
         )
 
         # Stable edge device identity for audit/claim. Persist in cache_dir/device_id
@@ -1973,6 +2294,13 @@ class EdgeCollector:
             include_ip=False,
             connect_timeout=self.upload_connect_timeout,
             read_timeout=self.upload_read_timeout,
+            telemetry_api_mode=str(config.get('telemetry_api_mode', 'legacy') or 'legacy'),
+            device_id=self.device_id,
+            zone_id=self.zone_id,
+            envelope_enable=bool(config.get('telemetry_envelope_enable', False)),
+            payload_encrypt=bool(config.get('telemetry_payload_encrypt', False)),
+            payload_encrypt_require_key=bool(config.get('telemetry_payload_encrypt_require_key', False)),
+            seq_manager=getattr(self, 'source_seq_mgr', None),
         )
 
         # Miner health state
@@ -2368,7 +2696,7 @@ class EdgeCollector:
         for idx in range(0, len(data), self.batch_size):
             chunk = data[idx: idx + self.batch_size]
 
-            compressed = self.uploader.build_payload(chunk)
+            compressed = self.uploader.build_payload(chunk, mode=mode)
             ok = self.uploader.upload_compressed(compressed, mode=mode)
 
             if not ok:
