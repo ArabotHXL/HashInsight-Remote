@@ -8,6 +8,9 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from pickaxe_app.vendor_edge_collector.cgminer_collector import CloudUploader, MinerData, CommandExecutor
+from fastapi.testclient import TestClient
+from pickaxe_app.config import AppConfig
+from pickaxe_app.server import LOCAL_SECRET_HEADER, create_app
 
 
 class DummyResp:
@@ -85,12 +88,39 @@ def test_command_executor_rejects_http_control():
     assert status == "failed" and message == "CONTROL_NOT_SUPPORTED_OVER_HTTP"
 
 
+def test_local_api_secret_protects_sensitive_endpoints():
+    cfg = AppConfig(local_api_secret="super-secret-local-token")
+
+    with mock.patch("pickaxe_app.server.load_config", return_value=cfg), \
+         mock.patch("pickaxe_app.server.save_config"):
+        client = TestClient(create_app())
+
+        protected = [
+            ("get", "/api/config", None),
+            ("get", "/api/status", None),
+            ("get", "/api/logs", None),
+            ("post", "/api/miners/test", {"miners": [{"ip": "127.0.0.1", "port": 4028}]}),
+            ("post", "/api/iprange/expand", {"range": "192.168.1.1-192.168.1.2"}),
+        ]
+
+        for method, path, payload in protected:
+            request = getattr(client, method)
+            kwargs = {"json": payload} if payload is not None else {}
+            assert request(path, **kwargs).status_code == 401
+
+        assert client.get(
+            "/api/config",
+            headers={LOCAL_SECRET_HEADER: "super-secret-local-token"},
+        ).status_code == 200
+
+
 if __name__ == "__main__":
     tests = [
         test_payload_strips_ip_and_creds,
         test_scrub_cached_payload,
         test_upload_compressed_posts_scrubbed_bytes,
         test_command_executor_rejects_http_control,
+        test_local_api_secret_protects_sensitive_endpoints,
     ]
     for t in tests:
         t()

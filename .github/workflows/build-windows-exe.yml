@@ -25,6 +25,11 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip install pyinstaller==6.17.0
 
+      - name: Run smoke tests
+        shell: pwsh
+        run: |
+          python smoke_test.py
+
       - name: Build Release (ONEDIR)
         shell: pwsh
         run: |

@@ -24,6 +24,12 @@ See `docs/README_END_TO_END.md`.
 - Local miner list encryption is **optional**. This build defaults to plaintext local config for reliability.
 - To encrypt the local miners list at rest, set an environment variable `PICKAXE_LOCAL_KEY` (32-byte key, base64 or hex).
 
+## Security (local API)
+
+- Save/start/stop, config reads, logs, status, miner tests, IP range expansion, and file import are protected by a local API secret.
+- Keep the default `PICKAXE_HOST=127.0.0.1` unless you intentionally need LAN access.
+- If you bind the UI to `0.0.0.0`, treat the local API secret like a password for this edge agent.
+
 Example (PowerShell):
 
 ```powershell

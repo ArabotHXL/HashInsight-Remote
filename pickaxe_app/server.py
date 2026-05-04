@@ -298,11 +298,13 @@ def create_app() -> FastAPI:
 
         @app.post("/api/miners/import_file")
         async def api_import_miners_file(
+            req: Request,
             file: UploadFile = File(...),
             default_port: int = 4028,
             default_type: str = "antminer",
             id_prefix: str = "AUTO_",
         ) -> Dict[str, Any]:
+            _require_local_secret(req)
             """Parse a CSV/XLSX file into miner objects for Bulk Add.
 
             Expected columns (any order, header optional): miner_id, ip, port, type
@@ -345,14 +347,16 @@ def create_app() -> FastAPI:
     else:
 
         @app.post("/api/miners/import_file")
-        async def api_import_miners_file_unavailable() -> Dict[str, Any]:
+        async def api_import_miners_file_unavailable(req: Request) -> Dict[str, Any]:
+            _require_local_secret(req)
             raise HTTPException(
                 status_code=501,
                 detail='File upload requires "python-multipart". Install it with: pip install python-multipart',
             )
 
     @app.get("/api/config")
-    def api_get_config() -> Dict[str, Any]:
+    def api_get_config(req: Request) -> Dict[str, Any]:
+        _require_local_secret(req)
         cfg = load_config(None)
         return {
             "warnings": get_last_warnings(),
@@ -533,7 +537,8 @@ def create_app() -> FastAPI:
         return {"success": True, "config_path": str(p)}
 
     @app.post("/api/miners/test")
-    def api_test_miners(payload: Dict[str, Any]) -> Dict[str, Any]:
+    def api_test_miners(payload: Dict[str, Any], req: Request) -> Dict[str, Any]:
+        _require_local_secret(req)
         miners = payload.get("miners")
         if not isinstance(miners, list) or not miners:
             raise HTTPException(status_code=400, detail="miners must be a non-empty list")
@@ -612,7 +617,8 @@ def create_app() -> FastAPI:
         return {"results": results, "count": len(results), "concurrency": concurrency}
 
     @app.post("/api/iprange/expand")
-    def api_expand_range(payload: Dict[str, Any]) -> Dict[str, Any]:
+    def api_expand_range(payload: Dict[str, Any], req: Request) -> Dict[str, Any]:
+        _require_local_secret(req)
         s = str(payload.get("range", "")).strip()
         if not s:
             raise HTTPException(status_code=400, detail="range is required")
@@ -647,11 +653,13 @@ def create_app() -> FastAPI:
         return runner.stop()
 
     @app.get("/api/status")
-    def api_status() -> Dict[str, Any]:
+    def api_status(req: Request) -> Dict[str, Any]:
+        _require_local_secret(req)
         return runner.status()
 
     @app.get("/api/logs", response_class=PlainTextResponse)
-    def api_logs(lines: int = 200) -> str:
+    def api_logs(req: Request, lines: int = 200) -> str:
+        _require_local_secret(req)
         return tail_file(log_file, lines=lines)
 
     return app
